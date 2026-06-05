@@ -1,35 +1,7 @@
 import { FacebookClient } from './facebookClient';
-import { getCachedInsight, setCachedInsight, clearExpiredCache } from '../models/cachedInsight';
-
-// --- Cold/Hot Cache TTL ---
-// Hot: today's data → 5 min TTL (data still changing)
-// Warm: yesterday → 1 hour TTL
-// Cold: older → 24 hour TTL (data is stable)
-
-function getTTLHours(dateEnd: string): number {
-  const today = new Date().toISOString().split('T')[0];
-  const end = new Date(dateEnd);
-  const now = new Date();
-  const daysAgo = Math.floor((now.getTime() - end.getTime()) / (1000 * 60 * 60 * 24));
-  if (dateEnd >= today) return 5 / 60;      // today: 5 min
-  if (daysAgo <= 1) return 1;                // yesterday: 1 hour
-  return 24;                                  // older: 24 hours
-}
-
-function isCacheFresh(cached: { created_at: string } | null, ttlHours: number): boolean {
-  if (!cached) return false;
-  const age = (Date.now() - new Date(cached.created_at).getTime()) / (1000 * 60 * 60);
-  return age < ttlHours;
-}
-
-async function getOrClearCache(adAccountId: string, type: string, start: string, end: string, breakdown: string = ''): Promise<any | null> {
-  const cached = await getCachedInsight(adAccountId, type, start, end, breakdown);
-  const ttl = getTTLHours(end);
-  if (isCacheFresh(cached, ttl)) {
-    return JSON.parse(cached!.data);
-  }
-  return null; // stale or missing → refetch
-}
+import { clearExpiredCache } from '../models/cachedInsight';
+import { getWithSWR, persistInsight, CacheKey } from './insightCache';
+import { getLatestSnapshots, snapshotToMetrics } from '../models/snapshot';
 
 interface InsightDataPoint {
   date: string;
@@ -55,7 +27,6 @@ interface OverviewMetrics {
   cpc: number;
   conversions: number;
   costPerConversion: number;
-  // Period-over-period comparison
   spendChange: number;
   impressionsChange: number;
   clicksChange: number;
@@ -71,24 +42,124 @@ export class InsightsService {
     this.accessToken = accessToken;
   }
 
+  async getDashboard(accountId: string, dateStart: string, dateEnd: string) {
+    const overview = await this.getOverview(accountId, dateStart, dateEnd);
+    const trends = await this.getTrends(accountId, dateStart, dateEnd);
+    const campaigns = await this.getCampaignInsights(accountId, dateStart, dateEnd);
+    return { overview, trends, campaigns };
+  }
+
+  async getHierarchy(
+    accountId: string,
+    dateStart: string,
+    dateEnd: string,
+    limit: number = 200
+  ) {
+    const campaigns = await this.getCampaignInsights(accountId, dateStart, dateEnd, limit);
+    const adsets = await this.getAdSetInsights(accountId, undefined, dateStart, dateEnd, limit);
+    const ads = await this.getAdInsights(accountId, undefined, dateStart, dateEnd, 500);
+    return { campaigns, adsets, ads };
+  }
+
   async getOverview(accountId: string, dateStart: string, dateEnd: string): Promise<OverviewMetrics> {
     const cleanId = accountId.replace('act_', '');
+    const key: CacheKey = {
+      adAccountId: cleanId,
+      insightType: 'overview',
+      dateRangeStart: dateStart,
+      dateRangeEnd: dateEnd,
+    };
 
-    // Check cold/hot cache first
-    const cachedOverview = await getOrClearCache(cleanId, 'overview', dateStart, dateEnd);
-    if (cachedOverview) return cachedOverview;
+    return getWithSWR(
+      key,
+      () => this.fetchOverviewFromFB(cleanId, dateStart, dateEnd),
+      (data) => persistInsight(key, data)
+    );
+  }
 
-    // Current period
+  async getCampaignInsights(accountId: string, dateStart: string, dateEnd: string, limit: number = 50) {
+    const cleanId = accountId.replace('act_', '');
+    const key: CacheKey = {
+      adAccountId: cleanId,
+      insightType: 'campaigns',
+      dateRangeStart: dateStart,
+      dateRangeEnd: dateEnd,
+    };
+
+    return getWithSWR(
+      key,
+      () => this.fetchCampaignInsightsFromFB(cleanId, dateStart, dateEnd, limit),
+      (data) => persistInsight(key, data)
+    );
+  }
+
+  async getAdSetInsights(accountId: string, campaignId?: string, dateStart?: string, dateEnd?: string, limit: number = 200) {
+    const cleanId = accountId.replace('act_', '');
+    const start = dateStart || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const end = dateEnd || new Date().toISOString().split('T')[0];
+    const cacheKey = `adsets_${campaignId || 'all'}`;
+    const key: CacheKey = {
+      adAccountId: cleanId,
+      insightType: cacheKey,
+      dateRangeStart: start,
+      dateRangeEnd: end,
+    };
+
+    return getWithSWR(
+      key,
+      () => this.fetchAdSetInsightsFromFB(cleanId, campaignId, start, end, limit),
+      (data) => persistInsight(key, data)
+    );
+  }
+
+  async getAdInsights(accountId: string, adsetId?: string, dateStart?: string, dateEnd?: string, limit: number = 500) {
+    const cleanId = accountId.replace('act_', '');
+    const start = dateStart || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const end = dateEnd || new Date().toISOString().split('T')[0];
+    const cacheKey = `ads_${adsetId || 'all'}`;
+    const key: CacheKey = {
+      adAccountId: cleanId,
+      insightType: cacheKey,
+      dateRangeStart: start,
+      dateRangeEnd: end,
+    };
+
+    return getWithSWR(
+      key,
+      () => this.fetchAdInsightsFromFB(cleanId, adsetId, start, end, limit),
+      (data) => persistInsight(key, data)
+    );
+  }
+
+  async getTrends(accountId: string, dateStart: string, dateEnd: string, breakdown: string = 'daily') {
+    const cleanId = accountId.replace('act_', '');
+    const key: CacheKey = {
+      adAccountId: cleanId,
+      insightType: 'trends',
+      dateRangeStart: dateStart,
+      dateRangeEnd: dateEnd,
+      breakdown,
+    };
+
+    return getWithSWR(
+      key,
+      () => this.fetchTrendsFromFB(cleanId, dateStart, dateEnd, breakdown),
+      (data) => persistInsight(key, data)
+    );
+  }
+
+  // --- FB fetchers (only called on cache miss or background refresh) ---
+
+  private async fetchOverviewFromFB(cleanId: string, dateStart: string, dateEnd: string): Promise<OverviewMetrics> {
     const currentData = await this.fbClient.getInsights(cleanId, this.accessToken, {
       level: 'account',
       time_range: { since: dateStart, until: dateEnd },
       time_increment: 'all_days',
     });
 
-    // Previous period (for comparison)
     const startDate = new Date(dateStart);
     const endDate = new Date(dateEnd);
-    const periodDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+    const periodDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
     const prevStart = new Date(startDate.getTime() - periodDays * 24 * 60 * 60 * 1000);
     const prevEnd = new Date(startDate.getTime() - 24 * 60 * 60 * 1000);
 
@@ -104,7 +175,9 @@ export class InsightsService {
     const current = this.aggregateData(currentData);
     const previous = this.aggregateData(prevData);
 
-    const result: OverviewMetrics = {
+    clearExpiredCache(24).catch(() => {});
+
+    return {
       spend: current.spend,
       impressions: current.impressions,
       clicks: current.clicks,
@@ -119,174 +192,132 @@ export class InsightsService {
       clicksChange: this.calcChange(current.clicks, previous.clicks),
       conversionsChange: this.calcChange(current.conversions, previous.conversions),
     };
-
-    // Cache the result
-    setCachedInsight({
-      adAccountId: cleanId,
-      insightType: 'overview',
-      dateRangeStart: dateStart,
-      dateRangeEnd: dateEnd,
-      jsonData: JSON.stringify(result),
-    });
-
-    // Clean old cache entries occasionally
-    clearExpiredCache(24);
-
-    return result;
   }
 
-  async getCampaignInsights(accountId: string, dateStart: string, dateEnd: string, limit: number = 50) {
-    const cleanId = accountId.replace('act_', '');
+  private async fetchCampaignInsightsFromFB(cleanId: string, dateStart: string, dateEnd: string, limit: number) {
+    const fromSnapshot = await this.trySnapshotFallback(cleanId, 'campaign', dateStart, dateEnd);
+    if (fromSnapshot) return fromSnapshot;
 
-    const cachedCampaigns = await getOrClearCache(cleanId, 'campaigns', dateStart, dateEnd);
-    if (cachedCampaigns) return cachedCampaigns;
-
-    // Fetch campaigns metadata
-    const campaignsResp = await this.fbClient.getCampaigns(cleanId, this.accessToken, limit);
-    const campaigns = campaignsResp.data || [];
-
-    // Fetch ALL campaign insights in ONE call
     const allInsights = await this.fbClient.getInsights(cleanId, this.accessToken, {
       level: 'campaign',
+      fields: 'campaign_id,campaign_name,objective,spend,impressions,clicks,reach,cpm,cpc,ctr,cost_per_action_type,actions,action_values,inline_link_clicks,unique_clicks,cost_per_unique_click,date_start,date_stop',
       time_range: { since: dateStart, until: dateEnd },
-      time_increment: 1, // daily breakdown, we aggregate below
+      time_increment: 1,
       limit: 500,
     });
 
-    // Group insights by campaign_id
     const insightMap = new Map<string, any[]>();
+    const metaMap = new Map<string, any>();
     for (const row of allInsights) {
       const cid = row.campaign_id;
       if (!insightMap.has(cid)) insightMap.set(cid, []);
       insightMap.get(cid)!.push(row);
+      if (!metaMap.has(cid)) {
+        metaMap.set(cid, { id: cid, name: row.campaign_name, objective: row.objective });
+      }
     }
 
-    // Merge campaigns with their insights
     const campaignData: any[] = [];
-    for (const campaign of campaigns) {
-      const rows = insightMap.get(campaign.id) || [];
-      const aggregated = this.aggregateDetailedData(rows);
+    for (const [cid, meta] of metaMap) {
+      const rows = insightMap.get(cid) || [];
       campaignData.push({
-        id: campaign.id,
-        name: campaign.name,
-        objective: campaign.objective,
-        status: campaign.status,
-        daily_budget: campaign.daily_budget,
-        lifetime_budget: campaign.lifetime_budget,
-        ...aggregated,
+        ...meta,
+        status: 'ACTIVE',
+        ...this.aggregateDetailedData(rows),
       });
     }
 
-    setCachedInsight({
-      adAccountId: cleanId,
-      insightType: 'campaigns',
-      dateRangeStart: dateStart,
-      dateRangeEnd: dateEnd,
-      jsonData: JSON.stringify(campaignData),
-    });
-
-    return campaignData;
+    return campaignData.slice(0, limit);
   }
 
-  async getAdSetInsights(accountId: string, campaignId?: string, dateStart?: string, dateEnd?: string, limit: number = 200) {
-    const cleanId = accountId.replace('act_', '');
-    const start = dateStart || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    const end = dateEnd || new Date().toISOString().split('T')[0];
+  private async fetchAdSetInsightsFromFB(
+    cleanId: string, campaignId: string | undefined, start: string, end: string, limit: number
+  ) {
+    const fromSnapshot = await this.trySnapshotFallback(cleanId, 'adset', start, end);
+    if (fromSnapshot) {
+      return campaignId ? fromSnapshot.filter((a: any) => a.campaignId === campaignId) : fromSnapshot;
+    }
 
-    const cacheKey = `adsets_${campaignId || 'all'}`;
-    const cachedAdSets = await getOrClearCache(cleanId, cacheKey, start, end);
-    if (cachedAdSets) return cachedAdSets;
-
-    // Fetch adsets metadata
-    const adsetsResp = await this.fbClient.getAdSets(cleanId, this.accessToken, campaignId, limit);
-    const adsets = adsetsResp.data || [];
-
-    // Fetch ALL adset insights in ONE call
     const allInsights = await this.fbClient.getInsights(cleanId, this.accessToken, {
       level: 'adset',
+      fields: 'adset_id,adset_name,campaign_id,spend,impressions,clicks,reach,cpm,cpc,ctr,cost_per_action_type,actions,action_values,inline_link_clicks,unique_clicks,cost_per_unique_click,date_start,date_stop',
       time_range: { since: start, until: end },
       time_increment: 1,
       limit: 500,
     });
 
-    // Group by adset_id
     const insightMap = new Map<string, any[]>();
+    const metaMap = new Map<string, any>();
     for (const row of allInsights) {
       const aid = row.adset_id;
       if (!insightMap.has(aid)) insightMap.set(aid, []);
       insightMap.get(aid)!.push(row);
+      if (!metaMap.has(aid)) {
+        metaMap.set(aid, { id: aid, name: row.adset_name, campaignId: row.campaign_id });
+      }
     }
 
-    const adsetData = adsets.map((adset: any) => {
-      const rows = insightMap.get(adset.id) || [];
-      const m = this.aggregateDetailedData(rows);
-      return {
-        id: adset.id,
-        name: adset.name,
-        campaignId: adset.campaign_id,
-        status: adset.status,
-        daily_budget: adset.daily_budget,
-        lifetime_budget: adset.lifetime_budget,
-        ...m,
-      };
-    });
+    const adsetData: any[] = [];
+    for (const [aid, meta] of metaMap) {
+      if (campaignId && meta.campaignId !== campaignId) continue;
+      const rows = insightMap.get(aid) || [];
+      adsetData.push({
+        ...meta,
+        status: 'ACTIVE',
+        ...this.aggregateDetailedData(rows),
+      });
+    }
 
-    setCachedInsight({ adAccountId: cleanId, insightType: cacheKey, dateRangeStart: start, dateRangeEnd: end, jsonData: JSON.stringify(adsetData) });
-    return adsetData;
+    return adsetData.slice(0, limit);
   }
 
-  async getAdInsights(accountId: string, adsetId?: string, dateStart?: string, dateEnd?: string, limit: number = 500) {
-    const cleanId = accountId.replace('act_', '');
-    const start = dateStart || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    const end = dateEnd || new Date().toISOString().split('T')[0];
+  private async fetchAdInsightsFromFB(
+    cleanId: string, adsetId: string | undefined, start: string, end: string, limit: number
+  ) {
+    const fromSnapshot = await this.trySnapshotFallback(cleanId, 'ad', start, end);
+    if (fromSnapshot) {
+      return adsetId ? fromSnapshot.filter((a: any) => a.adsetId === adsetId) : fromSnapshot;
+    }
 
-    const cacheKey = `ads_${adsetId || 'all'}`;
-    const cachedAds = await getOrClearCache(cleanId, cacheKey, start, end);
-    if (cachedAds) return cachedAds;
-
-    // Fetch ads metadata
-    const adsResp = await this.fbClient.getAds(cleanId, this.accessToken, { adsetId }, limit);
-    const ads = adsResp.data || [];
-
-    // Fetch ALL ad insights in ONE call
     const allInsights = await this.fbClient.getInsights(cleanId, this.accessToken, {
       level: 'ad',
+      fields: 'ad_id,ad_name,adset_id,campaign_id,spend,impressions,clicks,reach,cpm,cpc,ctr,cost_per_action_type,actions,action_values,inline_link_clicks,unique_clicks,cost_per_unique_click,date_start,date_stop',
       time_range: { since: start, until: end },
       time_increment: 1,
       limit: 500,
     });
 
-    // Group by ad_id
     const insightMap = new Map<string, any[]>();
+    const metaMap = new Map<string, any>();
     for (const row of allInsights) {
       const aid = row.ad_id;
       if (!insightMap.has(aid)) insightMap.set(aid, []);
       insightMap.get(aid)!.push(row);
+      if (!metaMap.has(aid)) {
+        metaMap.set(aid, {
+          id: aid,
+          name: row.ad_name,
+          adsetId: row.adset_id,
+          campaignId: row.campaign_id,
+        });
+      }
     }
 
-    const adData = ads.map((ad: any) => {
-      const rows = insightMap.get(ad.id) || [];
-      const m = this.aggregateDetailedData(rows);
-      return {
-        id: ad.id,
-        name: ad.name,
-        adsetId: ad.adset_id,
-        campaignId: ad.campaign_id,
-        status: ad.status,
-        creative: ad.creative,
-        ...m,
-      };
-    });
+    const adData: any[] = [];
+    for (const [aid, meta] of metaMap) {
+      if (adsetId && meta.adsetId !== adsetId) continue;
+      const rows = insightMap.get(aid) || [];
+      adData.push({
+        ...meta,
+        status: 'ACTIVE',
+        ...this.aggregateDetailedData(rows),
+      });
+    }
 
-    setCachedInsight({ adAccountId: cleanId, insightType: cacheKey, dateRangeStart: start, dateRangeEnd: end, jsonData: JSON.stringify(adData) });
-    return adData;
+    return adData.slice(0, limit);
   }
 
-  async getTrends(accountId: string, dateStart: string, dateEnd: string, breakdown: string = 'daily') {
-    const cleanId = accountId.replace('act_', '');
-    const cachedTrends = await getOrClearCache(cleanId, 'trends', dateStart, dateEnd, breakdown);
-    if (cachedTrends) return cachedTrends;
-
+  private async fetchTrendsFromFB(cleanId: string, dateStart: string, dateEnd: string, breakdown: string) {
     const increment = breakdown === 'weekly' ? 7 : breakdown === 'monthly' ? 'all_days' : 1;
     const rawData = await this.fbClient.getInsights(cleanId, this.accessToken, {
       level: 'account',
@@ -294,7 +325,7 @@ export class InsightsService {
       time_increment: increment,
     });
 
-    const trends: InsightDataPoint[] = (rawData || []).map((row: any) => ({
+    return (rawData || []).map((row: any) => ({
       date: row.date_start,
       spend: parseFloat(row.spend || '0'),
       impressions: parseInt(row.impressions || '0'),
@@ -306,18 +337,36 @@ export class InsightsService {
       conversions: this.extractConversions(row.actions),
       conversionValue: this.extractConversionValue(row.action_values),
       costPerConversion: parseFloat(row.cost_per_action_type?.[0]?.value || '0'),
-    }));
+    })) as InsightDataPoint[];
+  }
 
-    setCachedInsight({
-      adAccountId: cleanId,
-      insightType: 'trends',
-      dateRangeStart: dateStart,
-      dateRangeEnd: dateEnd,
-      breakdown,
-      jsonData: JSON.stringify(trends),
+  private async trySnapshotFallback(
+    cleanId: string,
+    level: 'campaign' | 'adset' | 'ad',
+    dateStart: string,
+    dateEnd: string
+  ): Promise<any[] | null> {
+    const today = new Date().toISOString().split('T')[0];
+    if (dateStart !== today || dateEnd !== today) return null;
+
+    const sinceHour = `${today}T00:00:00.000Z`;
+    const rows = await getLatestSnapshots(cleanId, level, sinceHour);
+    if (rows.length === 0) return null;
+
+    console.log(`[Insights] Serving ${level} from snapshots (${rows.length} entities)`);
+
+    return rows.map((row) => {
+      const metrics = snapshotToMetrics(row);
+      const base: any = {
+        id: row.entity_id,
+        name: row.entity_name || row.entity_id,
+        status: 'ACTIVE',
+        ...metrics,
+      };
+      if (level === 'adset') base.campaignId = row.parent_id;
+      if (level === 'ad') base.adsetId = row.parent_id;
+      return base;
     });
-
-    return trends;
   }
 
   // --- Helpers ---
@@ -349,13 +398,11 @@ export class InsightsService {
     };
   }
 
-  // Detailed aggregation with per-action-type breakdown
   private aggregateDetailedData(rows: any[]) {
     let spend = 0, impressions = 0, clicks = 0, reach = 0;
     let inlineLinkClicks = 0, uniqueClicks = 0;
-    let actionValues: Record<string, number> = {};
-    let actions: Record<string, number> = {};
-    let costPerAction: Record<string, number> = {};
+    const actionValues: Record<string, number> = {};
+    const actions: Record<string, number> = {};
 
     for (const row of rows) {
       spend += parseFloat(row.spend || '0');
@@ -365,17 +412,11 @@ export class InsightsService {
       inlineLinkClicks += parseInt(row.inline_link_clicks || '0');
       uniqueClicks += parseInt(row.unique_clicks || '0');
 
-      // Aggregate action values (for ROAS)
       for (const av of (row.action_values || [])) {
         actionValues[av.action_type] = (actionValues[av.action_type] || 0) + parseFloat(av.value || '0');
       }
-      // Aggregate actions (counts)
       for (const a of (row.actions || [])) {
         actions[a.action_type] = (actions[a.action_type] || 0) + parseInt(a.value || '0');
-      }
-      // Cost per action type
-      for (const cpa of (row.cost_per_action_type || [])) {
-        costPerAction[cpa.action_type] = (costPerAction[cpa.action_type] || 0) + parseFloat(cpa.value || '0');
       }
     }
 
@@ -393,17 +434,13 @@ export class InsightsService {
       ctr: impressions > 0 ? Math.round((clicks / impressions) * 10000) / 100 : 0,
       cpm: impressions > 0 ? Math.round((spend / impressions) * 100000) / 100 : 0,
       cpc: clicks > 0 ? Math.round((spend / clicks) * 100) / 100 : 0,
-      // ROAS = purchase value / spend
       roas: spend > 0 ? Math.round((purchaseValue / spend) * 100) / 100 : 0,
-      // Purchase
       purchases,
       purchaseValue: Math.round(purchaseValue * 100) / 100,
       costPerPurchase: purchases > 0 ? Math.round((spend / purchases) * 100) / 100 : 0,
-      // Link clicks (unique)
       inlineLinkClicks,
       uniqueClicks,
       costPerUniqueClick: uniqueClicks > 0 ? Math.round((spend / uniqueClicks) * 100) / 100 : 0,
-      // Funnel costs
       addToCart,
       costPerAddToCart: addToCart > 0 ? Math.round((spend / addToCart) * 100) / 100 : 0,
       initiateCheckout,
@@ -417,7 +454,7 @@ export class InsightsService {
     if (!actions) return 0;
     const conversionTypes = ['purchase', 'lead', 'complete_registration', 'add_to_cart', 'offsite_conversion'];
     return actions
-      .filter((a: any) => conversionTypes.includes(a.action_type))
+      .filter((a: any) => conversionTypes.some((t) => a.action_type?.includes(t)))
       .reduce((sum: number, a: any) => sum + parseInt(a.value || '0'), 0);
   }
 

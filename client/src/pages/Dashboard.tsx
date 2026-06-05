@@ -18,24 +18,15 @@ export const Dashboard: React.FC = () => {
     campaignInsights,
     loading,
     error,
-    fetchOverview,
-    fetchTrends,
-    fetchCampaignInsights,
+    fetchDashboard,
   } = useInsights();
 
   const { dateRange, setDateRange } = useUIStore();
   const [trendMetric, setTrendMetric] = useState<string>('spend');
 
-  const [initialLoaded, setInitialLoaded] = useState(false);
-
   useEffect(() => {
-    if (!initialLoaded) {
-      setInitialLoaded(true);
-      fetchOverview();
-      fetchTrends();
-      fetchCampaignInsights();
-    }
-  }, [dateRange]);
+    fetchDashboard();
+  }, [fetchDashboard]);
 
   const pieData = campaignInsights.map((c) => ({
     name: c.name,

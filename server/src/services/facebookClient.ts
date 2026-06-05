@@ -2,6 +2,7 @@ import axios, { AxiosInstance } from 'axios';
 import fs from 'fs';
 const { HttpsProxyAgent } = require('https-proxy-agent');
 import { config } from '../config';
+import { fbQueue } from './fbRequestQueue';
 
 interface TokenExchangeResult {
   access_token: string;
@@ -97,30 +98,36 @@ export class FacebookClient {
   // --- Graph API Helpers ---
 
   private async get(edge: string, accessToken: string, params: Record<string, any> = {}): Promise<any> {
-    try {
-      const response = await this.axios.get(`${this.baseUrl}/${edge}`, {
-        params: { ...params, access_token: accessToken },
-      });
-      return response.data;
-    } catch (err: any) {
-      console.error('[FB API Error] edge:', edge, 'status:', err.response?.status, 'body:', JSON.stringify(err.response?.data?.error));
-      throw err;
-    }
+    return fbQueue.enqueue(async () => {
+      try {
+        const response = await this.axios.get(`${this.baseUrl}/${edge}`, {
+          params: { ...params, access_token: accessToken },
+        });
+        return response.data;
+      } catch (err: any) {
+        console.error('[FB API Error] edge:', edge, 'status:', err.response?.status, 'body:', JSON.stringify(err.response?.data?.error));
+        throw err;
+      }
+    });
   }
 
   private async post(edge: string, accessToken: string, data: Record<string, any> = {}): Promise<any> {
-    const response = await this.axios.post(`${this.baseUrl}/${edge}`, data, {
-      params: { access_token: accessToken },
+    return fbQueue.enqueue(async () => {
+      const response = await this.axios.post(`${this.baseUrl}/${edge}`, data, {
+        params: { access_token: accessToken },
+      });
+      return response.data;
     });
-    return response.data;
   }
 
   private async postFormData(edge: string, accessToken: string, formData: Record<string, any>): Promise<any> {
-    const response = await this.axios.post(`${this.baseUrl}/${edge}`, formData, {
-      params: { access_token: accessToken },
-      headers: { 'Content-Type': 'multipart/form-data' },
+    return fbQueue.enqueue(async () => {
+      const response = await this.axios.post(`${this.baseUrl}/${edge}`, formData, {
+        params: { access_token: accessToken },
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      return response.data;
     });
-    return response.data;
   }
 
   // --- Ad Accounts ---
@@ -264,9 +271,9 @@ export class FacebookClient {
     form.append('access_token', accessToken);
     form.append('file', fileStream);
 
-    const response = await this.axios.post(url, form, {
-      headers: form.getHeaders(),
-    });
+    const response = await fbQueue.enqueue(() =>
+      this.axios.post(url, form, { headers: form.getHeaders() })
+    );
 
     // Return the image hash from the response
     const images = response.data?.images;
@@ -286,9 +293,9 @@ export class FacebookClient {
     form.append('access_token', accessToken);
     form.append('file', fileStream);
 
-    const response = await this.axios.post(url, form, {
-      headers: form.getHeaders(),
-    });
+    const response = await fbQueue.enqueue(() =>
+      this.axios.post(url, form, { headers: form.getHeaders() })
+    );
 
     return response.data?.id || '';
   }

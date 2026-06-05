@@ -206,15 +206,21 @@ export async function runHourlySnapshotForAllUsers(): Promise<void> {
 
   console.log(`[Snapshot] Running hourly snapshot for ${accounts.length} accounts at ${new Date().toISOString()}`);
 
+  const defaultToken = users[0].access_token;
   let total = 0;
   for (const acc of accounts) {
-    for (const user of users) {
-      try {
-        const n = await runHourlySnapshot(acc.ad_account_id, user.access_token);
-        total += n;
-      } catch (err: any) {
-        console.error(`[Snapshot] Failed for account ${acc.ad_account_id}:`, err.message);
-      }
+    try {
+      const rawId = acc.ad_account_id as string;
+      const fullId = rawId.startsWith('act_') ? rawId : `act_${rawId}`;
+      const linked = await query(
+        'SELECT u.access_token FROM ad_accounts aa JOIN users u ON aa.user_id = u.id WHERE aa.account_id IN ($1, $2) LIMIT 1',
+        [fullId, rawId]
+      );
+      const token = linked.length > 0 ? linked[0].access_token : defaultToken;
+      const n = await runHourlySnapshot(fullId, token);
+      total += n;
+    } catch (err: any) {
+      console.error(`[Snapshot] Failed for account ${acc.ad_account_id}:`, err.message);
     }
   }
 

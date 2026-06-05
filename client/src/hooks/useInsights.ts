@@ -8,12 +8,34 @@ export function useInsights() {
   const [overview, setOverview] = useState<OverviewMetrics | null>(null);
   const [trends, setTrends] = useState<TrendDataPoint[]>([]);
   const [campaignInsights, setCampaignInsights] = useState<CampaignWithMetrics[]>([]);
-  const [adsetInsights, setAdSetInsights] = useState<AdSetWithMetrics[]>([]);
+  const [adsetInsights, setAdsetInsights] = useState<AdSetWithMetrics[]>([]);
   const [adInsights, setAdInsights] = useState<AdWithMetrics[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { accountId } = useAccountStore();
   const { dateRange } = useUIStore();
+
+  const fetchDashboard = useCallback(async () => {
+    if (!accountId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const resp = await api.get('/insights/dashboard', {
+        params: {
+          accountId,
+          dateStart: dateRange[0],
+          dateEnd: dateRange[1],
+        },
+      });
+      setOverview(resp.data.overview || null);
+      setTrends(resp.data.trends || []);
+      setCampaignInsights(resp.data.campaigns || []);
+    } catch (err: any) {
+      setError(err.response?.data?.error || '加载数据失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [accountId, dateRange]);
 
   const fetchOverview = useCallback(async () => {
     if (!accountId) return;
@@ -21,11 +43,7 @@ export function useInsights() {
     setError(null);
     try {
       const resp = await api.get('/insights/overview', {
-        params: {
-          accountId,
-          dateStart: dateRange[0],
-          dateEnd: dateRange[1],
-        },
+        params: { accountId, dateStart: dateRange[0], dateEnd: dateRange[1] },
       });
       setOverview(resp.data);
     } catch (err: any) {
@@ -37,34 +55,21 @@ export function useInsights() {
 
   const fetchTrends = useCallback(async () => {
     if (!accountId) return;
-    setLoading(true);
-    setError(null);
     try {
       const resp = await api.get('/insights/trends', {
-        params: {
-          accountId,
-          dateStart: dateRange[0],
-          dateEnd: dateRange[1],
-        },
+        params: { accountId, dateStart: dateRange[0], dateEnd: dateRange[1] },
       });
       setTrends(resp.data || []);
     } catch (err: any) {
       setError(err.response?.data?.error || '加载趋势数据失败');
-    } finally {
-      setLoading(false);
     }
   }, [accountId, dateRange]);
 
   const fetchCampaignInsights = useCallback(async () => {
     if (!accountId) return;
-    setError(null);
     try {
       const resp = await api.get('/insights/campaigns', {
-        params: {
-          accountId,
-          dateStart: dateRange[0],
-          dateEnd: dateRange[1],
-        },
+        params: { accountId, dateStart: dateRange[0], dateEnd: dateRange[1] },
       });
       setCampaignInsights(resp.data || []);
     } catch (err: any) {
@@ -74,7 +79,6 @@ export function useInsights() {
 
   const fetchAdSetInsights = useCallback(async (campaignId?: string) => {
     if (!accountId) return;
-    setError(null);
     try {
       const resp = await api.get('/insights/adsets', {
         params: {
@@ -84,7 +88,7 @@ export function useInsights() {
           dateEnd: dateRange[1],
         },
       });
-      setAdSetInsights(resp.data || []);
+      setAdsetInsights(resp.data || []);
     } catch (err: any) {
       setError(err.response?.data?.error || '加载广告组数据失败');
     }
@@ -92,7 +96,6 @@ export function useInsights() {
 
   const fetchAdInsights = useCallback(async (adsetId?: string) => {
     if (!accountId) return;
-    setError(null);
     try {
       const resp = await api.get('/insights/ads', {
         params: {
@@ -116,6 +119,7 @@ export function useInsights() {
     adInsights,
     loading,
     error,
+    fetchDashboard,
     fetchOverview,
     fetchTrends,
     fetchCampaignInsights,

@@ -50,36 +50,16 @@ export const AdsManager: React.FC = () => {
     const dateStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const dateEnd = now.toISOString().split('T')[0];
 
-    const results = await Promise.allSettled([
-      // 1. Campaign insights (metadata + metrics)
-      api.get('/insights/campaigns', { params: { accountId, dateStart, dateEnd, limit: 200 } }),
-      // 2. AdSet insights (metadata + metrics)
-      api.get('/insights/adsets', { params: { accountId, dateStart, dateEnd, limit: 200 } }),
-      // 3. Ad insights (metadata + metrics)
-      api.get('/insights/ads', { params: { accountId, dateStart, dateEnd, limit: 500 } }),
-    ]);
-
-    if (results[0].status === 'fulfilled') {
-      setCampaigns(results[0].value.data || []);
-    } else {
-      console.error('Campaign insights failed:', results[0].reason);
-    }
-
-    if (results[1].status === 'fulfilled') {
-      setAllAdSets(results[1].value.data || []);
-    } else {
-      console.error('AdSet insights failed:', results[1].reason);
-    }
-
-    if (results[2].status === 'fulfilled') {
-      setAllAds(results[2].value.data || []);
-    } else {
-      console.error('Ad insights failed:', results[2].reason);
-    }
-
-    const failed = results.filter(r => r.status === 'rejected').length;
-    if (failed > 0) {
-      message.warning(`${failed}/3 个数据源加载失败，可能是 API 限流，可稍后刷新`);
+    try {
+      const resp = await api.get('/insights/hierarchy', {
+        params: { accountId, dateStart, dateEnd, limit: 200 },
+      });
+      setCampaigns(resp.data.campaigns || []);
+      setAllAdSets(resp.data.adsets || []);
+      setAllAds(resp.data.ads || []);
+    } catch (err: any) {
+      console.error('Hierarchy insights failed:', err);
+      message.warning(err.response?.data?.error || '加载失败，可能是 API 限流，可稍后刷新');
     }
 
     setLoading(false);
