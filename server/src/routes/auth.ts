@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
-import { upsertUser } from '../models/user';
+import { upsertUser, touchAccountsSyncedAt } from '../models/user';
+import { upsertAccountsForUser } from '../models/adAccount';
 import { FacebookClient } from '../services/facebookClient';
 
 export const authRouter = Router();
@@ -50,6 +51,18 @@ authRouter.get('/callback', async (req: Request, res: Response) => {
     const jwtToken = jwt.sign({ userId: user.id }, config.jwt.secret, {
       expiresIn: '7d' as any,
     });
+
+    // 登录后后台同步完整账户列表（不阻塞跳转）
+    void (async () => {
+      try {
+        const accounts = await fbClient.getAdAccounts(tokenData.access_token);
+        await upsertAccountsForUser(user.id, accounts);
+        await touchAccountsSyncedAt(user.id);
+        console.log(`[Auth] Synced ${accounts.length} ad accounts for user ${user.id}`);
+      } catch (err: any) {
+        console.warn('[Auth] Background account sync failed:', err.message);
+      }
+    })();
 
     // Redirect to frontend with token
     const clientUrl = `https://localhost:${config.server.clientPort}/auth/callback?token=${jwtToken}`;

@@ -21,20 +21,26 @@ export const useAccountStore = create<AccountState>((set) => ({
   },
 
   setAccounts: (accounts: FBAdAccount[]) => {
-    // Filter: only show active ad accounts
-    const active = accounts.filter(a => a.account_status === 1);
-    set({ accounts: active });
+    const sorted = [...accounts].sort((a, b) => {
+      if (a.account_status === 1 && b.account_status !== 1) return -1;
+      if (a.account_status !== 1 && b.account_status === 1) return 1;
+      return (a.name || a.id).localeCompare(b.name || b.id);
+    });
+    set({ accounts: sorted });
 
-    // Restore previously selected account, or auto-pick first active
     const currentId = localStorage.getItem('fb_account_id');
     const currentName = localStorage.getItem('fb_account_name');
 
-    if (currentId && active.some(a => a.id === currentId)) {
-      // Restore previous selection
+    if (currentId && sorted.some((a) => a.id === currentId)) {
       set({ accountId: currentId, accountName: currentName });
-    } else if (active.length > 0) {
-      // Auto-select first active account
-      set({ accountId: active[0].id, accountName: active[0].name });
+      return;
+    }
+
+    const firstActive = sorted.find((a) => a.account_status === 1);
+    if (firstActive) {
+      localStorage.setItem('fb_account_id', firstActive.id);
+      localStorage.setItem('fb_account_name', firstActive.name);
+      set({ accountId: firstActive.id, accountName: firstActive.name });
     }
   },
 }));

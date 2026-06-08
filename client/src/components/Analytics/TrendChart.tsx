@@ -14,11 +14,13 @@ interface TrendChartProps {
   onMetricChange?: (metric: string) => void;
 }
 
+const safeNum = (v: unknown): number => (v != null && !isNaN(Number(v)) ? Number(v) : 0);
+
 const METRICS_CONFIG: Record<string, { label: string; color: string; format: (v: number) => string; yAxisLabel: string }> = {
-  spend: { label: '花费', color: '#1677ff', format: (v) => `$${v.toFixed(2)}`, yAxisLabel: '花费 ($)' },
-  impressions: { label: '展示', color: '#52c41a', format: (v) => v.toLocaleString(), yAxisLabel: '展示数' },
-  clicks: { label: '点击', color: '#fa8c16', format: (v) => v.toLocaleString(), yAxisLabel: '点击数' },
-  conversions: { label: '转化', color: '#722ed1', format: (v) => v.toLocaleString(), yAxisLabel: '转化数' },
+  spend: { label: '花费', color: '#1677ff', format: (v) => `$${safeNum(v).toFixed(2)}`, yAxisLabel: '花费 ($)' },
+  impressions: { label: '展示', color: '#52c41a', format: (v) => safeNum(v).toLocaleString(), yAxisLabel: '展示数' },
+  clicks: { label: '点击', color: '#fa8c16', format: (v) => safeNum(v).toLocaleString(), yAxisLabel: '点击数' },
+  conversions: { label: '转化', color: '#722ed1', format: (v) => safeNum(v).toLocaleString(), yAxisLabel: '转化数' },
 };
 
 export const TrendChart: React.FC<TrendChartProps> = ({
@@ -31,11 +33,11 @@ export const TrendChart: React.FC<TrendChartProps> = ({
 
   const chartData = data.map((d) => ({
     date: dayjs(d.date).format('MM/DD'),
-    value: d[metric as keyof TrendDataPoint] as number,
-    impressions: d.impressions,
-    clicks: d.clicks,
-    spend: d.spend,
-    conversions: d.conversions,
+    value: safeNum(d[metric as keyof TrendDataPoint]),
+    impressions: safeNum(d.impressions),
+    clicks: safeNum(d.clicks),
+    spend: safeNum(d.spend),
+    conversions: safeNum(d.conversions),
   }));
 
   return (

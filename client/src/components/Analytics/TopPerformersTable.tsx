@@ -9,6 +9,13 @@ interface TopPerformersTableProps {
   type: 'campaign' | 'adset' | 'ad';
 }
 
+const fmtNum = (v: unknown) =>
+  v != null && !isNaN(Number(v)) ? Number(v).toLocaleString() : '-';
+const fmtMoney = (v: unknown) =>
+  v != null && !isNaN(Number(v)) ? `$${Number(v).toFixed(2)}` : '-';
+const fmtPct = (v: unknown) =>
+  v != null && !isNaN(Number(v)) ? `${Number(v).toFixed(2)}%` : '-';
+
 export const TopPerformersTable: React.FC<TopPerformersTableProps> = ({
   title,
   data,
@@ -39,48 +46,49 @@ export const TopPerformersTable: React.FC<TopPerformersTableProps> = ({
       dataIndex: 'spend',
       key: 'spend',
       width: 100,
-      render: (v: number) => `$${v.toFixed(2)}`,
-      sorter: (a, b) => a.spend - b.spend,
+      render: (v: unknown) => fmtMoney(v),
+      sorter: (a, b) => (a.spend ?? 0) - (b.spend ?? 0),
     },
     {
       title: '展示',
       dataIndex: 'impressions',
       key: 'impressions',
       width: 100,
-      render: (v: number) => v.toLocaleString(),
-      sorter: (a, b) => a.impressions - b.impressions,
+      render: (v: unknown) => fmtNum(v),
+      sorter: (a, b) => (a.impressions ?? 0) - (b.impressions ?? 0),
     },
     {
       title: '点击',
       dataIndex: 'clicks',
       key: 'clicks',
       width: 80,
-      render: (v: number) => v.toLocaleString(),
-      sorter: (a, b) => a.clicks - b.clicks,
+      render: (v: unknown) => fmtNum(v),
+      sorter: (a, b) => (a.clicks ?? 0) - (b.clicks ?? 0),
     },
     {
       title: 'CTR',
       dataIndex: 'ctr',
       key: 'ctr',
       width: 80,
-      render: (v: number) => `${v.toFixed(2)}%`,
-      sorter: (a, b) => a.ctr - b.ctr,
+      render: (v: unknown) => fmtPct(v),
+      sorter: (a, b) => (a.ctr ?? 0) - (b.ctr ?? 0),
     },
     {
       title: 'CPC',
       dataIndex: 'cpc',
       key: 'cpc',
       width: 80,
-      render: (v: number) => `$${v.toFixed(2)}`,
-      sorter: (a, b) => a.cpc - b.cpc,
+      render: (v: unknown) => fmtMoney(v),
+      sorter: (a, b) => (a.cpc ?? 0) - (b.cpc ?? 0),
     },
     {
       title: '转化',
-      dataIndex: 'conversions',
       key: 'conversions',
       width: 80,
-      render: (v: number) => v.toLocaleString(),
-      sorter: (a, b) => a.conversions - b.conversions,
+      render: (_: unknown, record: any) =>
+        fmtNum(record.conversions ?? record.purchases),
+      sorter: (a, b) =>
+        (a.conversions ?? a.purchases ?? 0) - (b.conversions ?? b.purchases ?? 0),
     },
   ];
 

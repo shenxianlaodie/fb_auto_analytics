@@ -133,15 +133,56 @@ export class FacebookClient {
   // --- Ad Accounts ---
 
   async getAdAccounts(accessToken: string): Promise<any[]> {
-    const resp = await this.get('me/adaccounts', accessToken, {
-      fields: 'id,name,account_id,currency,timezone_name,account_status',
-      limit: 100,
-    });
-    console.log('[FB] getAdAccounts raw response:', JSON.stringify(resp));
-    return resp.data || [];
+    const all: any[] = [];
+    let after: string | undefined;
+    for (let page = 0; page < 20; page++) {
+      const params: Record<string, any> = {
+        fields: 'id,name,account_id,currency,timezone_name,account_status',
+        limit: 100,
+      };
+      if (after) params.after = after;
+      const resp = await this.get('me/adaccounts', accessToken, params);
+      all.push(...(resp.data || []));
+      after = resp.paging?.cursors?.after;
+      if (!after) break;
+    }
+    return all;
   }
 
   // --- Campaigns ---
+
+  private async fetchAllPages(
+    edge: string,
+    accessToken: string,
+    fields: string,
+    pageSize = 100,
+    maxPages = 20
+  ): Promise<any[]> {
+    const all: any[] = [];
+    let after: string | undefined;
+    for (let page = 0; page < maxPages; page++) {
+      const params: Record<string, any> = { fields, limit: pageSize };
+      if (after) params.after = after;
+      const resp = await this.get(edge, accessToken, params);
+      all.push(...(resp.data || []));
+      after = resp.paging?.cursors?.after;
+      if (!after) break;
+    }
+    return all;
+  }
+
+  /** 轻量拉取：仅 id + status（随 metrics 同步刷新投放状态） */
+  async getAllCampaignStatuses(accountId: string, accessToken: string): Promise<any[]> {
+    return this.fetchAllPages(`act_${accountId}/campaigns`, accessToken, 'id,status');
+  }
+
+  async getAllAdSetStatuses(accountId: string, accessToken: string): Promise<any[]> {
+    return this.fetchAllPages(`act_${accountId}/adsets`, accessToken, 'id,status');
+  }
+
+  async getAllAdStatuses(accountId: string, accessToken: string): Promise<any[]> {
+    return this.fetchAllPages(`act_${accountId}/ads`, accessToken, 'id,status');
+  }
 
   async getCampaigns(accountId: string, accessToken: string, limit: number = 25, after?: string): Promise<any> {
     const params: Record<string, any> = {
@@ -207,7 +248,7 @@ export class FacebookClient {
 
   async getAds(accountId: string, accessToken: string, filters: { adsetId?: string; campaignId?: string }, limit: number = 25, after?: string): Promise<any> {
     const params: Record<string, any> = {
-      fields: 'id,name,adset_id,campaign_id,status,creative{id,title,body,image_url,thumbnail_url},created_time',
+      fields: 'id,name,adset_id,campaign_id,status,creative{id,effective_object_story_id,object_story_id},created_time',
       limit,
     };
     if (after) params.after = after;
@@ -221,8 +262,26 @@ export class FacebookClient {
 
   async getAd(adId: string, accessToken: string): Promise<any> {
     return this.get(adId, accessToken, {
-      fields: 'id,name,adset_id,campaign_id,status,creative,created_time,tracking_specs',
+      fields: 'id,name,adset_id,campaign_id,status,creative{id,effective_object_story_id,object_story_id},created_time,tracking_specs',
     });
+  }
+
+  async getAllAds(
+    accountId: string,
+    accessToken: string,
+    filters: { adsetId?: string; campaignId?: string } = {},
+    pageSize: number = 100,
+    maxPages: number = 20
+  ): Promise<any[]> {
+    const all: any[] = [];
+    let after: string | undefined;
+    for (let page = 0; page < maxPages; page++) {
+      const resp = await this.getAds(accountId, accessToken, filters, pageSize, after);
+      all.push(...(resp.data || []));
+      after = resp.paging?.cursors?.after;
+      if (!after) break;
+    }
+    return all;
   }
 
   async createAd(accountId: string, accessToken: string, data: Record<string, any>): Promise<any> {
@@ -239,19 +298,32 @@ export class FacebookClient {
 
   // --- Insights ---
 
+  private static INSIGHT_FIELDS: Record<string, string> = {
+    account: 'spend,impressions,clicks,reach,cpm,cpc,ctr,cost_per_action_type,actions,action_values,inline_link_clicks,unique_clicks,cost_per_unique_click,date_start,date_stop',
+    campaign: 'campaign_id,campaign_name,spend,impressions,clicks,reach,cpm,cpc,ctr,cost_per_action_type,actions,action_values,inline_link_clicks,unique_clicks,cost_per_unique_click,date_start,date_stop',
+    adset: 'adset_id,adset_name,campaign_id,spend,impressions,clicks,reach,cpm,cpc,ctr,cost_per_action_type,actions,action_values,inline_link_clicks,unique_clicks,cost_per_unique_click,date_start,date_stop',
+    ad: 'ad_id,ad_name,spend,cpm,date_start,date_stop',
+  };
+
   async getInsights(accountId: string, accessToken: string, params: Record<string, any>): Promise<any[]> {
-    const defaultParams: Record<string, any> = {
-      fields: 'spend,impressions,clicks,reach,cpm,cpc,ctr,cost_per_action_type,actions,action_values,website_ctr,inline_link_clicks,cost_per_inline_link_click,unique_clicks,cost_per_unique_click,cost_per_unique_action_type,date_start,date_stop,campaign_name',
-      level: 'account',
-      time_increment: 1,
-      limit: 500,
+    const level = params.level || 'account';
+    const { time_range, fields, level: _lvl, ...rest } = params;
+
+    const queryParams: Record<string, any> = {
+      fields: fields || FacebookClient.INSIGHT_FIELDS[level] || FacebookClient.INSIGHT_FIELDS.account,
+      level,
+      time_increment: rest.time_increment ?? 1,
+      limit: rest.limit ?? 500,
+      ...rest,
     };
 
-    const resp = await this.get(`act_${accountId}/insights`, accessToken, {
-      ...defaultParams,
-      ...params,
-    });
+    if (time_range) {
+      queryParams.time_range = typeof time_range === 'string'
+        ? time_range
+        : JSON.stringify(time_range);
+    }
 
+    const resp = await this.get(`act_${accountId}/insights`, accessToken, queryParams);
     return resp.data || [];
   }
 

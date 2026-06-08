@@ -1,4 +1,4 @@
-import { getCachedInsight, setCachedInsight } from '../models/cachedInsight';
+import { getCachedInsight, setCachedInsight, parseJsonbData } from '../models/cachedInsight';
 
 // TTL in hours
 export function getTTLHours(dateEnd: string): number {
@@ -47,7 +47,7 @@ export async function getWithSWR<T>(
   const ttl = getTTLHours(key.dateRangeEnd);
 
   if (cached && isCacheFresh(cached, ttl)) {
-    return JSON.parse(cached.data) as T;
+    return parseJsonbData<T>(cached.data);
   }
 
   if (cached) {
@@ -63,7 +63,7 @@ export async function getWithSWR<T>(
         .finally(() => inflight.delete(keyStr));
       inflight.set(keyStr, refresh);
     }
-    return JSON.parse(cached.data) as T;
+    return parseJsonbData<T>(cached.data);
   }
 
   if (inflight.has(keyStr)) {

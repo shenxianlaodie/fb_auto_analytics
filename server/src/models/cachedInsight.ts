@@ -7,8 +7,15 @@ export interface CachedInsight {
   date_range_start: string;
   date_range_end: string;
   breakdown: string;
-  data: string;
+  data: unknown; // JSONB — pg driver returns parsed object, not string
   created_at: string;
+}
+
+/** Parse JSONB column: pg returns object, legacy rows may be string */
+export function parseJsonbData<T>(value: unknown): T {
+  if (value === null || value === undefined) return value as T;
+  if (typeof value === 'string') return JSON.parse(value) as T;
+  return value as T;
 }
 
 export async function getCachedInsight(

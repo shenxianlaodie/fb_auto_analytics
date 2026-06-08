@@ -14,6 +14,8 @@ function isRateLimitError(err: any): boolean {
   const subcode = err?.response?.data?.error?.error_subcode;
   return (
     status === 429 ||
+    status === 403 ||
+    status === 400 && code === 17 ||
     code === 4 ||
     code === 17 ||
     code === 32 ||
@@ -21,6 +23,13 @@ function isRateLimitError(err: any): boolean {
     code === 80004 ||
     subcode === 2446079
   );
+}
+
+/** Ad-account level limit — retrying immediately won't help */
+function isAccountRateLimit(err: any): boolean {
+  const code = err?.response?.data?.error?.code;
+  const subcode = err?.response?.data?.error?.error_subcode;
+  return code === 17 && subcode === 2446079;
 }
 
 class FBRequestQueue {
@@ -74,7 +83,7 @@ class FBRequestQueue {
       try {
         return await fn();
       } catch (err: any) {
-        if (!isRateLimitError(err) || attempt === maxRetries) throw err;
+        if (isAccountRateLimit(err) || !isRateLimitError(err) || attempt === maxRetries) throw err;
         const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
         console.warn(`[FB Queue] Rate limited, retry ${attempt + 1}/${maxRetries} in ${delay}ms`);
         await sleep(delay);

@@ -21,7 +21,7 @@ export const PieChartCard: React.FC<PieChartCardProps> = ({
   colors = DEFAULT_COLORS,
 }) => {
   const chartData = data
-    .filter((d) => d.value > 0)
+    .filter((d) => (d.value ?? 0) > 0)
     .sort((a, b) => b.value - a.value)
     .slice(0, 10);
 
@@ -50,7 +50,7 @@ export const PieChartCard: React.FC<PieChartCardProps> = ({
               ))}
             </Pie>
             <Tooltip
-              formatter={(value: number) => [`$${value.toFixed(2)}`, '花费']}
+              formatter={(value: number) => [`$${(value ?? 0).toFixed(2)}`, '花费']}
             />
             <Legend />
           </PieChart>

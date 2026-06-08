@@ -58,18 +58,18 @@ npm install
 ### 3. 启动
 
 ```bash
-# 终端 1 - 启动后端 (http://localhost:3000)
+# 终端 1 - 启动后端 (https://localhost:3000)
 cd server
 npm run dev
 
-# 终端 2 - 启动前端 (http://localhost:5173)
+# 终端 2 - 启动前端 (https://localhost:5173)
 cd client
 npm run dev
 ```
 
 ### 4. 使用
 
-1. 浏览器打开 `http://localhost:5173`
+1. 浏览器打开 **`https://localhost:5173`**（必须用 HTTPS，用 `http://` 会连不上）
 2. 点击「使用 Facebook 账号登录」
 3. 授权后即可查看广告账户数据
 

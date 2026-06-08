@@ -1,6 +1,7 @@
 import Papa from 'papaparse';
 import { FacebookClient } from './facebookClient';
 import { createBatchJob, updateBatchProgress, getBatchJob, BatchResult } from '../models/batchJob';
+import { parseJsonbData } from '../models/cachedInsight';
 
 interface CsvRow {
   campaign_name: string;
@@ -79,7 +80,7 @@ export class BatchService {
       successCount: job.success_count,
       failedCount: job.failed_count,
       progress: job.progress,
-      results: JSON.parse(job.results || '[]'),
+      results: parseJsonbData<BatchResult[]>(job.results) || [],
       createdAt: job.created_at,
       updatedAt: job.updated_at,
     };

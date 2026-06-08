@@ -27,4 +27,16 @@ export const config = {
     database: process.env.PG_DATABASE || 'fb_auto_analytics',
     ssl: process.env.PG_SSL !== 'false',
   },
+  shoplazzaDb: {
+    host: process.env.PG_HOST || 'localhost',
+    port: parseInt(process.env.PG_PORT || '5432', 10),
+    user: process.env.PG_USER || 'postgres',
+    password: process.env.PG_PASSWORD || '',
+    database: process.env.SHOPLAZZA_PG_DATABASE || 'shoplazza',
+    ssl: process.env.PG_SSL !== 'false',
+  },
+  shoplazza: {
+    apiVersion: process.env.SHOPLAZZA_API_VERSION || '2025-06',
+    timeZone: parseInt(process.env.SHOPLAZZA_TIME_ZONE || '8', 10),
+  },
 };

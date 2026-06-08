@@ -1,19 +1,173 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   Table, Button, Modal, Form, Input, Select, Space, Tag, Popconfirm,
   Typography, message, Image,
 } from 'antd';
 import {
   PlusOutlined, ReloadOutlined, EditOutlined, DeleteOutlined,
-  RightOutlined, DownOutlined,
+  RightOutlined, DownOutlined, SearchOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import api from '../services/api';
 import { useAccountStore } from '../store/accountStore';
 import { FBCampaign, FBAdSet, FBAd } from '../types/facebook';
 import { EmptyState } from '../components/Common/EmptyState';
+import { todayDateRange } from '../utils/todayRange';
 
 const { Title } = Typography;
+
+interface UtmAggMetrics {
+  spend: number;
+  utmUv: number;
+  utmOrders: number;
+  utmSales: number;
+  utmAddToCart: number;
+  utmBeginCheckout: number;
+}
+
+function aggregateAdsMetrics(ads: any[]): UtmAggMetrics {
+  let spend = 0;
+  let utmUv = 0;
+  let utmOrders = 0;
+  let utmSales = 0;
+  let utmAddToCart = 0;
+  let utmBeginCheckout = 0;
+  for (const ad of ads) {
+    spend += Number(ad.spend) || 0;
+    utmUv += Number(ad.utmUv) || 0;
+    utmOrders += Number(ad.utmOrders) || 0;
+    utmSales += Number(ad.utmSales) || 0;
+    utmAddToCart += Number(ad.utmAddToCart) || 0;
+    utmBeginCheckout += Number(ad.utmBeginCheckout) || 0;
+  }
+  return { spend, utmUv, utmOrders, utmSales, utmAddToCart, utmBeginCheckout };
+}
+
+function fmtCostPerUv(spend: number, uv: number): string {
+  if (!uv || uv <= 0) return '-';
+  return `$${(spend / uv).toFixed(2)}`;
+}
+
+function fmtCostPerOrder(spend: number, orders: number): string {
+  if (!orders || orders <= 0) return '-';
+  return `$${(spend / orders).toFixed(2)}`;
+}
+
+function fmtCostPerCount(spend: number, count: number): string {
+  if (!count || count <= 0) return '-';
+  return `$${(spend / count).toFixed(2)}`;
+}
+
+function fmtRoas(sales: number, spend: number): string {
+  if (!spend || spend <= 0) return '-';
+  return (sales / spend).toFixed(2);
+}
+
+function cmpStr(a: string, b: string): number {
+  return (a || '').localeCompare(b || '', 'zh-CN');
+}
+
+function cmpNum(a: number, b: number): number {
+  return (a || 0) - (b || 0);
+}
+
+function parseBudget(r: { daily_budget?: string; lifetime_budget?: string }): number {
+  const b = r.daily_budget || r.lifetime_budget;
+  return b ? parseInt(b, 10) / 100 : 0;
+}
+
+function adsForCampaign(campaignId: string, ads: any[]): any[] {
+  return ads.filter((a) => (a.campaignId || a.campaign_id) === campaignId);
+}
+
+function adsForAdset(adsetId: string, ads: any[]): any[] {
+  return ads.filter((a) => (a.adsetId || a.adset_id) === adsetId);
+}
+
+function renderStatusTag(status: string, level: 'campaign' | 'adset' | 'ad' = 'ad') {
+  const pausedLabel = level === 'campaign' ? '已暂停' : '暂停';
+  return (
+    <Tag color={status === 'ACTIVE' ? 'green' : status === 'PAUSED' ? 'orange' : 'default'}>
+      {status === 'ACTIVE' ? '投放中' : status === 'PAUSED' ? pausedLabel : status}
+    </Tag>
+  );
+}
+
+function filterHierarchy(
+  campaigns: any[],
+  adsets: FBAdSet[],
+  ads: FBAd[],
+  searchAdId: string,
+  searchName: string,
+) {
+  const adIdQ = searchAdId.trim().toLowerCase();
+  const nameQ = searchName.trim().toLowerCase();
+
+  if (!adIdQ && !nameQ) {
+    return {
+      campaigns,
+      adsets,
+      ads,
+      expandCampaignIds: [] as string[],
+      expandAdsetIds: [] as string[],
+    };
+  }
+
+  const campaignIds = new Set<string>();
+  const adsetIds = new Set<string>();
+  const adIds = new Set<string>();
+
+  for (const c of campaigns) {
+    const cid = c.id;
+    const campaignNameMatch = nameQ && (c.name || '').toLowerCase().includes(nameQ);
+    const childAdsets = adsets.filter((a) => ((a as any).campaignId || a.campaign_id) === cid);
+
+    if (campaignNameMatch) {
+      campaignIds.add(cid);
+      childAdsets.forEach((a) => adsetIds.add(a.id));
+      adsForCampaign(cid, ads).forEach((a) => adIds.add(a.id));
+      continue;
+    }
+
+    for (const adset of childAdsets) {
+      const asid = adset.id;
+      const adsetNameMatch = nameQ && (adset.name || '').toLowerCase().includes(nameQ);
+      const adsInSet = adsForAdset(asid, ads);
+
+      if (adsetNameMatch) {
+        campaignIds.add(cid);
+        adsetIds.add(asid);
+        adsInSet.forEach((a) => adIds.add(a.id));
+        continue;
+      }
+
+      for (const ad of adsInSet) {
+        const adIdMatch = adIdQ && String(ad.id).toLowerCase() === adIdQ;
+        const adNameMatch = nameQ && (ad.name || '').toLowerCase().includes(nameQ);
+        if (adIdMatch || adNameMatch) {
+          campaignIds.add(cid);
+          adsetIds.add(asid);
+          adIds.add(ad.id);
+        }
+      }
+    }
+  }
+
+  return {
+    campaigns: campaigns.filter((c) => campaignIds.has(c.id)),
+    adsets: adsets.filter((a) => adsetIds.has(a.id)),
+    ads: ads.filter((a) => adIds.has(a.id)),
+    expandCampaignIds: [...campaignIds],
+    expandAdsetIds: [...adsetIds],
+  };
+}
+
+interface SyncMeta {
+  structureSyncedAt: string | null;
+  metricsSyncedAt: string | null;
+  utmSyncedAt: string | null;
+  refreshing: boolean;
+}
 
 const OBJECTIVES: Record<string, string> = {
   OUTCOME_TRAFFIC: '流量',
@@ -25,12 +179,16 @@ const OBJECTIVES: Record<string, string> = {
 };
 
 export const AdsManager: React.FC = () => {
-  const { accountId } = useAccountStore();
+  const { accountId, accountName } = useAccountStore();
   const [campaigns, setCampaigns] = useState<any[]>([]);
   const [allAdSets, setAllAdSets] = useState<FBAdSet[]>([]);
   const [allAds, setAllAds] = useState<FBAd[]>([]);
   const [loading, setLoading] = useState(false);
+  const [syncMeta, setSyncMeta] = useState<SyncMeta | null>(null);
   const loadedRef = useRef(false);
+  const dateRef = useRef(todayDateRange().dateStart);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const readPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Modal state
   const [modalOpen, setModalOpen] = useState(false);
@@ -39,43 +197,153 @@ export const AdsManager: React.FC = () => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+  const [searchAdId, setSearchAdId] = useState('');
+  const [searchName, setSearchName] = useState('');
 
-  // Fetch all data: each call independent, failure doesn't block others
+  const getDateRange = () => todayDateRange();
+
+  const filtered = useMemo(
+    () => filterHierarchy(campaigns, allAdSets, allAds, searchAdId, searchName),
+    [campaigns, allAdSets, allAds, searchAdId, searchName],
+  );
+  const searchActive = !!(searchAdId.trim() || searchName.trim());
+  const displayCampaigns = filtered.campaigns;
+  const displayAdsets = filtered.adsets;
+  const displayAds = filtered.ads;
+
+  const applyHierarchy = (data: any) => {
+    setCampaigns(data.campaigns || []);
+    setAllAdSets(data.adsets || []);
+    setAllAds(data.ads || []);
+    if (data.meta) setSyncMeta(data.meta);
+  };
+
+  const loadHierarchy = useCallback(async (triggerRefresh = false) => {
+    if (!accountId) return;
+    const { dateStart, dateEnd } = getDateRange();
+
+    if (triggerRefresh) {
+      api.post('/analytics/refresh', { accountId, accountName, dateStart, dateEnd }).catch((err) => {
+        console.warn('Background refresh failed:', err);
+      });
+    }
+
+    const resp = await api.get('/analytics/hierarchy', {
+      params: { accountId, accountName, dateStart, dateEnd },
+    });
+    applyHierarchy(resp.data);
+    return resp.data?.meta as SyncMeta | undefined;
+  }, [accountId, accountName]);
+
+  const startPolling = useCallback(() => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    let attempts = 0;
+    pollRef.current = setInterval(async () => {
+      attempts++;
+      try {
+        const meta = await loadHierarchy(false);
+        if (!meta?.refreshing || attempts >= 30) {
+          if (pollRef.current) {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+          }
+        }
+      } catch {
+        if (attempts >= 18 && pollRef.current) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+        }
+      }
+    }, 5000);
+  }, [loadHierarchy]);
+
   const fetchAll = useCallback(async () => {
     if (!accountId || loadedRef.current) return;
     loadedRef.current = true;
     setLoading(true);
 
-    const now = new Date();
-    const dateStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    const dateEnd = now.toISOString().split('T')[0];
-
     try {
-      const resp = await api.get('/insights/hierarchy', {
-        params: { accountId, dateStart, dateEnd, limit: 200 },
-      });
-      setCampaigns(resp.data.campaigns || []);
-      setAllAdSets(resp.data.adsets || []);
-      setAllAds(resp.data.ads || []);
+      await loadHierarchy(true);
+      startPolling();
     } catch (err: any) {
-      console.error('Hierarchy insights failed:', err);
-      message.warning(err.response?.data?.error || '加载失败，可能是 API 限流，可稍后刷新');
+      console.error('Hierarchy load failed:', err);
+      message.warning(err.response?.data?.error || '加载数据失败');
     }
 
     setLoading(false);
-  }, [accountId]);
+  }, [accountId, loadHierarchy, startPolling]);
 
   useEffect(() => {
-    // Only fetch if no data yet (backend cache handles freshness)
-    if (accountId && campaigns.length === 0) {
-      loadedRef.current = false;
-      fetchAll();
-    }
-  }, [accountId]);
-
-  const refresh = () => {
+    if (!accountId) return;
+    setCampaigns([]);
+    setAllAdSets([]);
+    setAllAds([]);
+    setSyncMeta(null);
     loadedRef.current = false;
+    dateRef.current = getDateRange().dateStart;
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    if (readPollRef.current) {
+      clearInterval(readPollRef.current);
+      readPollRef.current = null;
+    }
     fetchAll();
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+      if (readPollRef.current) clearInterval(readPollRef.current);
+    };
+  }, [accountId, fetchAll]);
+
+  // 每 60 秒读库刷新展示（0 次外部 API）
+  useEffect(() => {
+    if (!accountId) return;
+    readPollRef.current = setInterval(() => {
+      loadHierarchy(false).catch(() => {});
+    }, 60_000);
+    return () => {
+      if (readPollRef.current) {
+        clearInterval(readPollRef.current);
+        readPollRef.current = null;
+      }
+    };
+  }, [accountId, loadHierarchy]);
+
+  // 跨日自动刷新（页面长时间打开时）
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const today = getDateRange().dateStart;
+      if (today !== dateRef.current) {
+        dateRef.current = today;
+        loadedRef.current = false;
+        fetchAll();
+      }
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [fetchAll]);
+
+  // 切回标签页时刷新
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && accountId) {
+        loadHierarchy(true);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [accountId, loadHierarchy]);
+
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      await loadHierarchy(true);
+      startPolling();
+      message.success('已触发后台同步');
+    } catch (err: any) {
+      message.warning(err.response?.data?.error || '刷新失败');
+    }
+    setLoading(false);
   };
 
   // --- Actions ---
@@ -170,51 +438,107 @@ export const AdsManager: React.FC = () => {
 
   // --- Campaign columns ---
   const campaignColumns: ColumnsType<any> = [
-    { title: '广告系列名', dataIndex: 'name', key: 'name', width: 180, ellipsis: true, fixed: 'left' as const },
-    { title: '投放状态', dataIndex: 'status', key: 'status', width: 90,
-      render: (s: string) => (
-        <Tag color={s === 'ACTIVE' ? 'green' : s === 'PAUSED' ? 'orange' : 'default'}>
-          {s === 'ACTIVE' ? '投放中' : s === 'PAUSED' ? '已暂停' : s}
-        </Tag>
-      ),
+    {
+      title: '广告系列名', dataIndex: 'name', key: 'name', width: 180, ellipsis: true, fixed: 'left' as const,
+      sorter: (a, b) => cmpStr(a.name, b.name),
     },
-    { title: '预算', key: 'budget', width: 100,
+    {
+      title: '投放状态', dataIndex: 'status', key: 'status', width: 90,
+      sorter: (a, b) => cmpStr(a.status, b.status),
+      render: (s: string) => renderStatusTag(s, 'campaign'),
+    },
+    {
+      title: '预算', key: 'budget', width: 100,
+      sorter: (a, b) => cmpNum(parseBudget(a), parseBudget(b)),
       render: (_: any, r: any) => {
-        const budget = r.daily_budget || r.lifetime_budget;
-        return budget ? `$${(parseInt(budget) / 100).toFixed(0)}` : '-';
+        const budget = parseBudget(r);
+        return budget > 0 ? `$${budget.toFixed(0)}` : '-';
       },
     },
-    { title: 'ROAS\n(购物)', key: 'roas', width: 90,
-      render: (_: any, r: any) => (r.roas != null && !isNaN(r.roas)) ? `${r.roas.toFixed(2)}` : '-',
+    {
+      title: '单次成效\n花费', key: 'purchases', width: 90,
+      sorter: (a, b) => {
+        const ma = aggregateAdsMetrics(adsForCampaign(a.id, displayAds));
+        const mb = aggregateAdsMetrics(adsForCampaign(b.id, displayAds));
+        const va = ma.utmOrders > 0 ? ma.spend / ma.utmOrders : -1;
+        const vb = mb.utmOrders > 0 ? mb.spend / mb.utmOrders : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => {
+        const m = aggregateAdsMetrics(adsForCampaign(r.id, displayAds));
+        return fmtCostPerOrder(m.spend, m.utmOrders);
+      },
     },
-    { title: '成效\n(购物)', key: 'purchases', width: 80,
-      render: (_: any, r: any) => (r.purchases != null && !isNaN(r.purchases)) ? r.purchases.toLocaleString() : '-',
-    },
-    { title: '已花费\n金额', key: 'spend', width: 90,
+    {
+      title: '已花费\n金额', key: 'spend', width: 90,
+      sorter: (a, b) => cmpNum(Number(a.spend) || 0, Number(b.spend) || 0),
       render: (_: any, r: any) => (r.spend != null && !isNaN(r.spend)) ? `$${r.spend.toFixed(2)}` : '-',
     },
-    { title: 'CPM', key: 'cpm', width: 80,
+    {
+      title: 'CPM', key: 'cpm', width: 80,
+      sorter: (a, b) => cmpNum(Number(a.cpm) || 0, Number(b.cpm) || 0),
       render: (_: any, r: any) => (r.cpm != null && !isNaN(r.cpm)) ? `$${r.cpm.toFixed(2)}` : '-',
     },
-    { title: '单次链接\n点击费用\n(独立)', key: 'costPerUniqueClick', width: 100,
-      render: (_: any, r: any) => (r.costPerUniqueClick != null && !isNaN(r.costPerUniqueClick)) ? `$${r.costPerUniqueClick.toFixed(2)}` : '-',
+    {
+      title: '单次连接\n点击花费', key: 'uniqueClicks', width: 100,
+      sorter: (a, b) => {
+        const ma = aggregateAdsMetrics(adsForCampaign(a.id, displayAds));
+        const mb = aggregateAdsMetrics(adsForCampaign(b.id, displayAds));
+        const va = ma.utmUv > 0 ? ma.spend / ma.utmUv : -1;
+        const vb = mb.utmUv > 0 ? mb.spend / mb.utmUv : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => {
+        const m = aggregateAdsMetrics(adsForCampaign(r.id, displayAds));
+        return fmtCostPerUv(m.spend, m.utmUv);
+      },
     },
-    { title: '链接点击\n(独立)', key: 'uniqueClicks', width: 90,
-      render: (_: any, r: any) => (r.uniqueClicks != null && !isNaN(r.uniqueClicks)) ? r.uniqueClicks.toLocaleString() : '-',
+    {
+      title: '单次加购\n费用', key: 'costPerAddToCart', width: 90,
+      sorter: (a, b) => {
+        const ma = aggregateAdsMetrics(adsForCampaign(a.id, displayAds));
+        const mb = aggregateAdsMetrics(adsForCampaign(b.id, displayAds));
+        const va = ma.utmAddToCart > 0 ? ma.spend / ma.utmAddToCart : -1;
+        const vb = mb.utmAddToCart > 0 ? mb.spend / mb.utmAddToCart : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => {
+        const m = aggregateAdsMetrics(adsForCampaign(r.id, displayAds));
+        return fmtCostPerCount(m.spend, m.utmAddToCart);
+      },
     },
-    { title: '单次加购\n费用', key: 'costPerAddToCart', width: 90,
-      render: (_: any, r: any) => (r.costPerAddToCart != null && !isNaN(r.costPerAddToCart)) ? `$${r.costPerAddToCart.toFixed(2)}` : '-',
+    {
+      title: '单次结账\n费用', key: 'costPerInitiateCheckout', width: 90,
+      sorter: (a, b) => {
+        const ma = aggregateAdsMetrics(adsForCampaign(a.id, displayAds));
+        const mb = aggregateAdsMetrics(adsForCampaign(b.id, displayAds));
+        const va = ma.utmBeginCheckout > 0 ? ma.spend / ma.utmBeginCheckout : -1;
+        const vb = mb.utmBeginCheckout > 0 ? mb.spend / mb.utmBeginCheckout : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => {
+        const m = aggregateAdsMetrics(adsForCampaign(r.id, displayAds));
+        return fmtCostPerCount(m.spend, m.utmBeginCheckout);
+      },
     },
-    { title: '单次结账\n费用', key: 'costPerInitiateCheckout', width: 90,
-      render: (_: any, r: any) => (r.costPerInitiateCheckout != null && !isNaN(r.costPerInitiateCheckout)) ? `$${r.costPerInitiateCheckout.toFixed(2)}` : '-',
+    {
+      title: 'ROAS', key: 'costPerPurchase', width: 90,
+      sorter: (a, b) => {
+        const ma = aggregateAdsMetrics(adsForCampaign(a.id, displayAds));
+        const mb = aggregateAdsMetrics(adsForCampaign(b.id, displayAds));
+        const va = ma.spend > 0 ? ma.utmSales / ma.spend : -1;
+        const vb = mb.spend > 0 ? mb.utmSales / mb.spend : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => {
+        const m = aggregateAdsMetrics(adsForCampaign(r.id, displayAds));
+        return fmtRoas(m.utmSales, m.spend);
+      },
     },
-    { title: '单次支付\n信息费用', key: 'costPerAddPaymentInfo', width: 100,
-      render: (_: any, r: any) => (r.costPerAddPaymentInfo != null && !isNaN(r.costPerAddPaymentInfo)) ? `$${r.costPerAddPaymentInfo.toFixed(2)}` : '-',
+    {
+      title: '广告编号', dataIndex: 'id', key: 'id', width: 160, ellipsis: true,
+      sorter: (a, b) => cmpStr(a.id, b.id),
     },
-    { title: '单次购物\n费用', key: 'costPerPurchase', width: 90,
-      render: (_: any, r: any) => (r.costPerPurchase != null && !isNaN(r.costPerPurchase)) ? `$${r.costPerPurchase.toFixed(2)}` : '-',
-    },
-    { title: '广告编号', dataIndex: 'id', key: 'id', width: 160, ellipsis: true },
     { title: '操作', key: 'actions', width: 200, fixed: 'right' as const,
       render: (_, record) => (
         <Space size="small">
@@ -234,21 +558,54 @@ export const AdsManager: React.FC = () => {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <Title level={4} style={{ margin: 0 }}>📢 广告管理</Title>
         <Space>
-          <Button icon={<ReloadOutlined />} onClick={refresh}>刷新</Button>
+          {syncMeta?.refreshing && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>同步中…</Typography.Text>
+          )}
+          {syncMeta?.metricsSyncedAt && !syncMeta.refreshing && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              指标更新 {new Date(syncMeta.metricsSyncedAt).toLocaleTimeString()}
+            </Typography.Text>
+          )}
+          <Button icon={<ReloadOutlined />} onClick={refresh} loading={loading}>刷新</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreateModal('campaign')}>
             创建广告系列
           </Button>
         </Space>
       </div>
 
+      <div style={{ marginBottom: 16, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <Input
+          allowClear
+          prefix={<SearchOutlined style={{ color: '#bbb' }} />}
+          placeholder="搜索广告编号（精确匹配）"
+          value={searchAdId}
+          onChange={(e) => setSearchAdId(e.target.value)}
+          style={{ width: 260 }}
+        />
+        <Input
+          allowClear
+          prefix={<SearchOutlined style={{ color: '#bbb' }} />}
+          placeholder="模糊搜索系列 / 广告组 / 广告名称"
+          value={searchName}
+          onChange={(e) => setSearchName(e.target.value)}
+          style={{ width: 320 }}
+        />
+        {searchActive && (
+          <Typography.Text type="secondary" style={{ lineHeight: '32px' }}>
+            匹配 {displayCampaigns.length} 个系列 / {displayAdsets.length} 个广告组 / {displayAds.length} 条广告
+          </Typography.Text>
+        )}
+      </div>
+
       <Table
         columns={campaignColumns}
-        dataSource={campaigns}
+        dataSource={displayCampaigns}
         rowKey="id"
         loading={loading}
         size="middle"
         scroll={{ x: 1800 }}
         expandable={{
+          expandedRowKeys: searchActive ? filtered.expandCampaignIds : undefined,
           expandIcon: ({ expanded, onExpand, record }) =>
             expanded ? (
               <DownOutlined onClick={e => onExpand(record, e)} style={{ cursor: 'pointer', marginRight: 4 }} />
@@ -256,11 +613,12 @@ export const AdsManager: React.FC = () => {
               <RightOutlined onClick={e => onExpand(record, e)} style={{ cursor: 'pointer', marginRight: 4 }} />
             ),
           expandedRowRender: (campaign) => {
-            const campaignAdSets = allAdSets.filter((a: any) => (a.campaignId || a.campaign_id) === campaign.id);
+            const campaignAdSets = displayAdsets.filter((a: any) => (a.campaignId || a.campaign_id) === campaign.id);
             return (
               <AdSetSubTable
                 adsets={campaignAdSets}
-                allAds={allAds}
+                allAds={displayAds}
+                expandAll={searchActive}
                 onEdit={handleEdit}
                 onDelete={handleDelete}
                 onCreateAd={(adsetId) => openCreateModal('ad', adsetId)}
@@ -276,7 +634,7 @@ export const AdsManager: React.FC = () => {
       <Modal
         title={editingId ? `编辑${modalType === 'campaign' ? '广告系列' : modalType === 'adset' ? '广告组' : '广告'}` : `创建${modalType === 'campaign' ? '广告系列' : modalType === 'adset' ? '广告组' : '广告'}`}
         open={modalOpen} onOk={handleSubmit} onCancel={() => setModalOpen(false)}
-        confirmLoading={submitting} destroyOnClose width={500}
+        confirmLoading={submitting} destroyOnHidden width={500}
       >
         <Form form={form} layout="vertical">
           <Form.Item name="name" label="名称" rules={[{ required: true, message: '请输入名称' }]}>
@@ -331,52 +689,122 @@ export const AdsManager: React.FC = () => {
 function AdSetSubTable({
   adsets,
   allAds,
+  expandAll,
   onEdit,
   onDelete,
   onCreateAd,
   onCreateAdSet,
 }: {
-  adsets: FBAdSet[];
-  allAds: FBAd[];
+  adsets: any[];
+  allAds: any[];
+  expandAll?: boolean;
   onEdit: (type: 'adset' | 'ad', record: any) => void;
   onDelete: (type: string, id: string) => void;
   onCreateAd: (adsetId: string) => void;
   onCreateAdSet: () => void;
 }) {
-  const adsetColumns: ColumnsType<FBAdSet> = [
-    { title: '广告组名称', dataIndex: 'name', key: 'name', width: 160, ellipsis: true, fixed: 'left' as const },
-    { title: '投放状态', dataIndex: 'status', key: 'status', width: 90,
-      render: (s: string) => (
-        <Tag color={s === 'ACTIVE' ? 'green' : s === 'PAUSED' ? 'orange' : 'default'}>
-          {s === 'ACTIVE' ? '投放中' : s === 'PAUSED' ? '暂停' : s}
-        </Tag>
-      ),
+  const adsetColumns: ColumnsType<any> = [
+    {
+      title: '广告组名称', dataIndex: 'name', key: 'name', width: 160, ellipsis: true, fixed: 'left' as const,
+      sorter: (a, b) => cmpStr(a.name, b.name),
     },
-    { title: '日预算', key: 'budget', width: 100,
+    {
+      title: '投放状态', dataIndex: 'status', key: 'status', width: 90,
+      sorter: (a, b) => cmpStr(a.status, b.status),
+      render: (s: string) => renderStatusTag(s, 'adset'),
+    },
+    {
+      title: '日预算', key: 'budget', width: 100,
+      sorter: (a, b) => cmpNum(parseBudget(a), parseBudget(b)),
       render: (_: any, r: any) => {
-        const b = r.daily_budget || r.lifetime_budget;
-        return b ? `$${(parseInt(b) / 100).toFixed(0)}` : '-';
+        const b = parseBudget(r);
+        return b > 0 ? `$${b.toFixed(0)}` : '-';
       },
     },
-    { title: '已花费', key: 'spend', width: 90,
+    {
+      title: '已花费', key: 'spend', width: 90,
+      sorter: (a, b) => cmpNum(Number(a.spend) || 0, Number(b.spend) || 0),
       render: (_: any, r: any) => (r.spend != null && !isNaN(r.spend)) ? `$${r.spend.toFixed(2)}` : '-',
     },
-    { title: 'CPM', key: 'cpm', width: 80,
+    {
+      title: 'CPM', key: 'cpm', width: 80,
+      sorter: (a, b) => cmpNum(Number(a.cpm) || 0, Number(b.cpm) || 0),
       render: (_: any, r: any) => (r.cpm != null && !isNaN(r.cpm)) ? `$${r.cpm.toFixed(2)}` : '-',
     },
-    { title: '链接点击\n(独立)', key: 'uniqueClicks', width: 90,
-      render: (_: any, r: any) => (r.uniqueClicks != null && !isNaN(r.uniqueClicks)) ? r.uniqueClicks.toLocaleString() : '-',
+    {
+      title: '单次连接\n点击花费', key: 'uniqueClicks', width: 100,
+      sorter: (a, b) => {
+        const ma = aggregateAdsMetrics(adsForAdset(a.id, allAds));
+        const mb = aggregateAdsMetrics(adsForAdset(b.id, allAds));
+        const va = ma.utmUv > 0 ? ma.spend / ma.utmUv : -1;
+        const vb = mb.utmUv > 0 ? mb.spend / mb.utmUv : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => {
+        const m = aggregateAdsMetrics(adsForAdset(r.id, allAds));
+        return fmtCostPerUv(m.spend, m.utmUv);
+      },
     },
-    { title: 'ROAS\n(购物)', key: 'roas', width: 90,
-      render: (_: any, r: any) => (r.roas != null && !isNaN(r.roas)) ? r.roas.toFixed(2) : '-',
+    {
+      title: '单次成效\n花费', key: 'purchases', width: 90,
+      sorter: (a, b) => {
+        const ma = aggregateAdsMetrics(adsForAdset(a.id, allAds));
+        const mb = aggregateAdsMetrics(adsForAdset(b.id, allAds));
+        const va = ma.utmOrders > 0 ? ma.spend / ma.utmOrders : -1;
+        const vb = mb.utmOrders > 0 ? mb.spend / mb.utmOrders : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => {
+        const m = aggregateAdsMetrics(adsForAdset(r.id, allAds));
+        return fmtCostPerOrder(m.spend, m.utmOrders);
+      },
     },
-    { title: '成效\n(购物)', key: 'purchases', width: 80,
-      render: (_: any, r: any) => (r.purchases != null && !isNaN(r.purchases)) ? r.purchases.toLocaleString() : '-',
+    {
+      title: 'ROAS', key: 'costPerPurchase', width: 90,
+      sorter: (a, b) => {
+        const ma = aggregateAdsMetrics(adsForAdset(a.id, allAds));
+        const mb = aggregateAdsMetrics(adsForAdset(b.id, allAds));
+        const va = ma.spend > 0 ? ma.utmSales / ma.spend : -1;
+        const vb = mb.spend > 0 ? mb.utmSales / mb.spend : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => {
+        const m = aggregateAdsMetrics(adsForAdset(r.id, allAds));
+        return fmtRoas(m.utmSales, m.spend);
+      },
     },
-    { title: '单次购物\n费用', key: 'costPerPurchase', width: 90,
-      render: (_: any, r: any) => (r.costPerPurchase != null && !isNaN(r.costPerPurchase)) ? `$${r.costPerPurchase.toFixed(2)}` : '-',
+    {
+      title: '单次加购\n费用', key: 'costPerAddToCart', width: 90,
+      sorter: (a, b) => {
+        const ma = aggregateAdsMetrics(adsForAdset(a.id, allAds));
+        const mb = aggregateAdsMetrics(adsForAdset(b.id, allAds));
+        const va = ma.utmAddToCart > 0 ? ma.spend / ma.utmAddToCart : -1;
+        const vb = mb.utmAddToCart > 0 ? mb.spend / mb.utmAddToCart : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => {
+        const m = aggregateAdsMetrics(adsForAdset(r.id, allAds));
+        return fmtCostPerCount(m.spend, m.utmAddToCart);
+      },
     },
-    { title: '广告组编号', dataIndex: 'id', key: 'id', width: 160, ellipsis: true },
+    {
+      title: '单次结账\n费用', key: 'costPerInitiateCheckout', width: 90,
+      sorter: (a, b) => {
+        const ma = aggregateAdsMetrics(adsForAdset(a.id, allAds));
+        const mb = aggregateAdsMetrics(adsForAdset(b.id, allAds));
+        const va = ma.utmBeginCheckout > 0 ? ma.spend / ma.utmBeginCheckout : -1;
+        const vb = mb.utmBeginCheckout > 0 ? mb.spend / mb.utmBeginCheckout : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => {
+        const m = aggregateAdsMetrics(adsForAdset(r.id, allAds));
+        return fmtCostPerCount(m.spend, m.utmBeginCheckout);
+      },
+    },
+    {
+      title: '广告组编号', dataIndex: 'id', key: 'id', width: 160, ellipsis: true,
+      sorter: (a, b) => cmpStr(a.id, b.id),
+    },
     { title: '操作', key: 'actions', width: 200, fixed: 'right' as const,
       render: (_, record) => (
         <Space size="small">
@@ -405,6 +833,7 @@ function AdSetSubTable({
         pagination={false}
         scroll={{ x: 1200 }}
         expandable={{
+          expandedRowKeys: expandAll ? adsets.map((a) => a.id) : undefined,
           expandIcon: ({ expanded, onExpand, record }) =>
             expanded ? (
               <DownOutlined onClick={e => onExpand(record, e)} style={{ cursor: 'pointer', marginRight: 4 }} />
@@ -412,7 +841,7 @@ function AdSetSubTable({
               <RightOutlined onClick={e => onExpand(record, e)} style={{ cursor: 'pointer', marginRight: 4 }} />
             ),
           expandedRowRender: (adset) => {
-            const adsetAds = allAds.filter((a: any) => (a.adsetId || a.adset_id) === adset.id);
+            const adsetAds = adsForAdset(adset.id, allAds);
             return (
               <AdSubTable
                 ads={adsetAds}
@@ -436,41 +865,86 @@ function AdSubTable({
   onDelete,
   onCreate,
 }: {
-  ads: FBAd[];
+  ads: any[];
   onEdit: (type: 'ad', record: any) => void;
   onDelete: (type: string, id: string) => void;
   onCreate: () => void;
 }) {
-  const adColumns: ColumnsType<FBAd> = [
-    { title: '广告名称', dataIndex: 'name', key: 'name', width: 180, ellipsis: true, fixed: 'left' as const },
-    { title: '创意', dataIndex: 'creative', key: 'creative', width: 70,
+  const adColumns: ColumnsType<any> = [
+    {
+      title: '广告名称', dataIndex: 'name', key: 'name', width: 180, ellipsis: true, fixed: 'left' as const,
+      sorter: (a, b) => cmpStr(a.name, b.name),
+    },
+    {
+      title: '创意', dataIndex: 'creative', key: 'creative', width: 70,
       render: (c: any) => c?.thumbnail_url
         ? <Image src={c.thumbnail_url} width={40} height={40} style={{ objectFit: 'cover', borderRadius: 4 }} />
         : <Tag>无</Tag>,
     },
-    { title: '投放状态', dataIndex: 'status', key: 'status', width: 90,
-      render: (s: string) => (
-        <Tag color={s === 'ACTIVE' ? 'green' : s === 'PAUSED' ? 'orange' : 'default'}>
-          {s === 'ACTIVE' ? '投放中' : s === 'PAUSED' ? '暂停' : s}
-        </Tag>
-      ),
+    {
+      title: '投放状态', dataIndex: 'status', key: 'status', width: 90,
+      sorter: (a, b) => cmpStr(a.status, b.status),
+      render: (s: string) => renderStatusTag(s, 'ad'),
     },
-    { title: '已花费', key: 'spend', width: 90,
+    {
+      title: '已花费', key: 'spend', width: 90,
+      sorter: (a, b) => cmpNum(Number(a.spend) || 0, Number(b.spend) || 0),
       render: (_: any, r: any) => (r.spend != null && !isNaN(r.spend)) ? `$${r.spend.toFixed(2)}` : '-',
     },
-    { title: 'CPM', key: 'cpm', width: 80,
+    {
+      title: 'CPM', key: 'cpm', width: 80,
+      sorter: (a, b) => cmpNum(Number(a.cpm) || 0, Number(b.cpm) || 0),
       render: (_: any, r: any) => (r.cpm != null && !isNaN(r.cpm)) ? `$${r.cpm.toFixed(2)}` : '-',
     },
-    { title: '链接点击\n(独立)', key: 'uniqueClicks', width: 90,
-      render: (_: any, r: any) => (r.uniqueClicks != null && !isNaN(r.uniqueClicks)) ? r.uniqueClicks.toLocaleString() : '-',
+    {
+      title: '单次连接\n点击花费', key: 'uniqueClicks', width: 100,
+      sorter: (a, b) => {
+        const va = Number(a.utmUv) > 0 ? Number(a.spend) / Number(a.utmUv) : -1;
+        const vb = Number(b.utmUv) > 0 ? Number(b.spend) / Number(b.utmUv) : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => fmtCostPerUv(Number(r.spend) || 0, Number(r.utmUv) || 0),
     },
-    { title: '成效\n(购物)', key: 'purchases', width: 80,
-      render: (_: any, r: any) => (r.purchases != null && !isNaN(r.purchases)) ? r.purchases.toLocaleString() : '-',
+    {
+      title: '单次成效\n花费', key: 'purchases', width: 90,
+      sorter: (a, b) => {
+        const va = Number(a.utmOrders) > 0 ? Number(a.spend) / Number(a.utmOrders) : -1;
+        const vb = Number(b.utmOrders) > 0 ? Number(b.spend) / Number(b.utmOrders) : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => fmtCostPerOrder(Number(r.spend) || 0, Number(r.utmOrders) || 0),
     },
-    { title: '单次购物\n费用', key: 'costPerPurchase', width: 90,
-      render: (_: any, r: any) => (r.costPerPurchase != null && !isNaN(r.costPerPurchase)) ? `$${r.costPerPurchase.toFixed(2)}` : '-',
+    {
+      title: 'ROAS', key: 'costPerPurchase', width: 90,
+      sorter: (a, b) => {
+        const va = Number(a.spend) > 0 ? Number(a.utmSales) / Number(a.spend) : -1;
+        const vb = Number(b.spend) > 0 ? Number(b.utmSales) / Number(b.spend) : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => fmtRoas(Number(r.utmSales) || 0, Number(r.spend) || 0),
     },
-    { title: '广告编号', dataIndex: 'id', key: 'id', width: 160, ellipsis: true },
+    {
+      title: '单次加购\n费用', key: 'costPerAddToCart', width: 90,
+      sorter: (a, b) => {
+        const va = Number(a.utmAddToCart) > 0 ? Number(a.spend) / Number(a.utmAddToCart) : -1;
+        const vb = Number(b.utmAddToCart) > 0 ? Number(b.spend) / Number(b.utmAddToCart) : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => fmtCostPerCount(Number(r.spend) || 0, Number(r.utmAddToCart) || 0),
+    },
+    {
+      title: '单次结账\n费用', key: 'costPerInitiateCheckout', width: 90,
+      sorter: (a, b) => {
+        const va = Number(a.utmBeginCheckout) > 0 ? Number(a.spend) / Number(a.utmBeginCheckout) : -1;
+        const vb = Number(b.utmBeginCheckout) > 0 ? Number(b.spend) / Number(b.utmBeginCheckout) : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => fmtCostPerCount(Number(r.spend) || 0, Number(r.utmBeginCheckout) || 0),
+    },
+    {
+      title: '广告编号', dataIndex: 'id', key: 'id', width: 160, ellipsis: true,
+      sorter: (a, b) => cmpStr(a.id, b.id),
+    },
     { title: '操作', key: 'actions', width: 140, fixed: 'right' as const,
       render: (_, record) => (
         <Space size="small">

@@ -8,7 +8,11 @@ import { config } from './config';
 import { initDatabase } from './models/database';
 import { rateLimitMiddleware } from './middleware/rateLimit';
 import { errorHandler } from './middleware/errorHandler';
-import { runHourlySnapshotForAllUsers } from './services/snapshotService';
+import {
+  runMetricsCron,
+  runShoplazzaCron,
+  runStructureCron,
+} from './services/syncSchedulerService';
 
 // Import routes
 import { authRouter } from './routes/auth';
@@ -19,6 +23,7 @@ import { adsRouter } from './routes/ads';
 import { insightsRouter } from './routes/insights';
 import { batchRouter } from './routes/batch';
 import { uploadRouter } from './routes/upload';
+import { analyticsRouter } from './routes/analytics';
 
 const app = express();
 
@@ -39,6 +44,7 @@ app.use('/api/ads', adsRouter);
 app.use('/api/insights', insightsRouter);
 app.use('/api/batch', batchRouter);
 app.use('/api/upload', uploadRouter);
+app.use('/api/analytics', analyticsRouter);
 
 // Health check
 app.get('/api/health', (_req, res) => {
@@ -63,16 +69,34 @@ async function start() {
       console.log(`[Server] Client: https://localhost:${config.server.clientPort}`);
     });
 
-    // Hourly snapshot: run at minute 5 of every hour
-    cron.schedule('5 * * * *', async () => {
-      console.log('[Cron] Starting hourly snapshot...');
+    // Shoplazza UTM：每 5 分钟
+    cron.schedule('*/5 * * * *', async () => {
       try {
-        await runHourlySnapshotForAllUsers();
+        await runShoplazzaCron();
       } catch (err: any) {
-        console.error('[Cron] Snapshot failed:', err.message);
+        console.error('[Cron] Shoplazza sync failed:', err.message);
       }
     });
-    console.log('[Cron] Hourly snapshot scheduled (minute 5 of every hour)');
+
+    // FB 指标：每 15 分钟（1 次 insights/ad）
+    cron.schedule('*/15 * * * *', async () => {
+      try {
+        await runMetricsCron();
+      } catch (err: any) {
+        console.error('[Cron] Metrics sync failed:', err.message);
+      }
+    });
+
+    // FB 结构：每 6 小时
+    cron.schedule('15 */6 * * *', async () => {
+      try {
+        await runStructureCron();
+      } catch (err: any) {
+        console.error('[Cron] Structure sync failed:', err.message);
+      }
+    });
+
+    console.log('[Cron] UTM 5min (hot 2min) / Metrics 15min (hot 2min) / Structure 6h');
   } catch (err) {
     console.error('[Server] Failed to start:', err);
     process.exit(1);

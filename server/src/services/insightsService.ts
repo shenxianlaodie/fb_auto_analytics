@@ -55,10 +55,25 @@ export class InsightsService {
     dateEnd: string,
     limit: number = 200
   ) {
-    const campaigns = await this.getCampaignInsights(accountId, dateStart, dateEnd, limit);
-    const adsets = await this.getAdSetInsights(accountId, undefined, dateStart, dateEnd, limit);
-    const ads = await this.getAdInsights(accountId, undefined, dateStart, dateEnd, 500);
-    return { campaigns, adsets, ads };
+    const cleanId = accountId.replace('act_', '');
+    const key: CacheKey = {
+      adAccountId: cleanId,
+      insightType: 'hierarchy_v4',
+      dateRangeStart: dateStart,
+      dateRangeEnd: dateEnd,
+    };
+
+    return getWithSWR(
+      key,
+      () => this.fetchHierarchyFromFB(cleanId, dateStart, dateEnd, limit),
+      async (data) => {
+        if (this.hasAnyMetrics(data)) {
+          await persistInsight(key, data);
+        } else {
+          console.warn('[Hierarchy] Skipping cache — no metrics data');
+        }
+      }
+    );
   }
 
   async getOverview(accountId: string, dateStart: string, dateEnd: string): Promise<OverviewMetrics> {
@@ -81,7 +96,7 @@ export class InsightsService {
     const cleanId = accountId.replace('act_', '');
     const key: CacheKey = {
       adAccountId: cleanId,
-      insightType: 'campaigns',
+      insightType: 'campaigns_v3',
       dateRangeStart: dateStart,
       dateRangeEnd: dateEnd,
     };
@@ -97,7 +112,7 @@ export class InsightsService {
     const cleanId = accountId.replace('act_', '');
     const start = dateStart || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const end = dateEnd || new Date().toISOString().split('T')[0];
-    const cacheKey = `adsets_${campaignId || 'all'}`;
+    const cacheKey = `adsets_v3_${campaignId || 'all'}`;
     const key: CacheKey = {
       adAccountId: cleanId,
       insightType: cacheKey,
@@ -116,7 +131,7 @@ export class InsightsService {
     const cleanId = accountId.replace('act_', '');
     const start = dateStart || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const end = dateEnd || new Date().toISOString().split('T')[0];
-    const cacheKey = `ads_${adsetId || 'all'}`;
+    const cacheKey = `ads_v3_${adsetId || 'all'}`;
     const key: CacheKey = {
       adAccountId: cleanId,
       insightType: cacheKey,
@@ -194,127 +209,316 @@ export class InsightsService {
     };
   }
 
+  private buildInsightMap(rows: any[], idField: string): Map<string, any[]> {
+    const map = new Map<string, any[]>();
+    for (const row of rows) {
+      const id = row[idField];
+      if (!id) continue;
+      if (!map.has(id)) map.set(id, []);
+      map.get(id)!.push(row);
+    }
+    if (rows.length > 0 && map.size === 0) {
+      console.warn(`[Insights] ${rows.length} insight rows but none had ${idField}`);
+    }
+    return map;
+  }
+
+  private hasAnyMetrics(data: { campaigns?: any[]; adsets?: any[]; ads?: any[] }): boolean {
+    const all = [...(data.campaigns || []), ...(data.adsets || []), ...(data.ads || [])];
+    return all.some((r) => (r.spend ?? 0) > 0 || (r.impressions ?? 0) > 0);
+  }
+
+  private async safeFbCall<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const fbMsg = err?.response?.data?.error?.error_user_msg || err.message;
+      console.warn(`[Hierarchy] ${label} failed: ${fbMsg}`);
+      return fallback;
+    }
+  }
+
+  private async loadSnapshotMetrics(cleanId: string, since: string) {
+    const [campaignSnaps, adsetSnaps, adSnaps] = await Promise.all([
+      getLatestSnapshots(cleanId, 'campaign', since),
+      getLatestSnapshots(cleanId, 'adset', since),
+      getLatestSnapshots(cleanId, 'ad', since),
+    ]);
+    return {
+      campaign: new Map(campaignSnaps.map((s) => [s.entity_id, snapshotToMetrics(s)])),
+      adset: new Map(adsetSnaps.map((s) => [s.entity_id, snapshotToMetrics(s)])),
+      ad: new Map(adSnaps.map((s) => [s.entity_id, snapshotToMetrics(s)])),
+      campaignSnaps,
+      adsetSnaps,
+      adSnaps,
+      count: campaignSnaps.length + adsetSnaps.length + adSnaps.length,
+    };
+  }
+
+  private buildAdSetsFromInsights(rows: any[]): any[] {
+    const map = new Map<string, any>();
+    for (const row of rows) {
+      if (!row.adset_id || map.has(row.adset_id)) continue;
+      map.set(row.adset_id, {
+        id: row.adset_id,
+        name: row.adset_name || row.adset_id,
+        campaign_id: row.campaign_id,
+        status: 'ACTIVE',
+      });
+    }
+    return Array.from(map.values());
+  }
+
+  private buildAdsFromInsights(rows: any[]): any[] {
+    const map = new Map<string, any>();
+    for (const row of rows) {
+      if (!row.ad_id || map.has(row.ad_id)) continue;
+      map.set(row.ad_id, {
+        id: row.ad_id,
+        name: row.ad_name || row.ad_id,
+        adset_id: row.adset_id,
+        campaign_id: row.campaign_id,
+        status: 'ACTIVE',
+      });
+    }
+    return Array.from(map.values());
+  }
+
+  /** Metadata + 1 insights call; falls back to DB snapshots when rate-limited */
+  private async fetchHierarchyFromFB(cleanId: string, dateStart: string, dateEnd: string, limit: number) {
+    const since = `${dateStart}T00:00:00.000Z`;
+
+    const campaigns = (await this.safeFbCall(
+      'getCampaigns',
+      () => this.fbClient.getCampaigns(cleanId, this.accessToken, limit).then((r) => r.data || []),
+      [] as any[]
+    ));
+
+    let adsets = await this.safeFbCall(
+      'getAdSets',
+      () => this.fbClient.getAdSets(cleanId, this.accessToken, undefined, limit).then((r) => r.data || []),
+      [] as any[]
+    );
+
+    let ads = await this.safeFbCall(
+      'getAds',
+      () => this.fbClient.getAds(cleanId, this.accessToken, {}, 500).then((r) => r.data || []),
+      [] as any[]
+    );
+
+    let adInsightRows = await this.safeFbCall(
+      'adInsights',
+      () => this.fbClient.getInsights(cleanId, this.accessToken, {
+        level: 'ad',
+        time_range: { since: dateStart, until: dateEnd },
+        time_increment: 'all_days',
+        limit: 500,
+      }),
+      [] as any[]
+    );
+
+    if (adsets.length === 0 && adInsightRows.length > 0) {
+      adsets = this.buildAdSetsFromInsights(adInsightRows);
+    }
+    if (ads.length === 0 && adInsightRows.length > 0) {
+      ads = this.buildAdsFromInsights(adInsightRows);
+    }
+
+    const snapshots = await this.loadSnapshotMetrics(cleanId, since);
+
+    if (adsets.length === 0 && snapshots.adsetSnaps.length > 0) {
+      adsets = snapshots.adsetSnaps.map((s) => ({
+        id: s.entity_id,
+        name: s.entity_name || s.entity_id,
+        campaign_id: s.parent_id,
+        status: 'ACTIVE',
+      }));
+    }
+    if (ads.length === 0 && snapshots.adSnaps.length > 0) {
+      ads = snapshots.adSnaps.map((s) => ({
+        id: s.entity_id,
+        name: s.entity_name || s.entity_id,
+        adset_id: s.parent_id,
+        status: 'ACTIVE',
+      }));
+    }
+
+    console.log(`[Hierarchy] FB: ${campaigns.length} campaigns, ${adsets.length} adsets, ${ads.length} ads, ${adInsightRows.length} insight rows`);
+    if (adInsightRows.length === 0 && snapshots.count > 0) {
+      console.log(`[Hierarchy] Using snapshot fallback (${snapshots.count} rows)`);
+    }
+
+    const adMap = this.buildInsightMap(adInsightRows, 'ad_id');
+    const adsetMap = this.buildInsightMap(adInsightRows, 'adset_id');
+    const campaignMap = this.buildInsightMap(adInsightRows, 'campaign_id');
+
+    const pickMetrics = (insightRows: any[] | undefined, snapMetrics: any | undefined) => {
+      if (insightRows && insightRows.length > 0) return this.aggregateDetailedData(insightRows);
+      if (snapMetrics) return snapMetrics;
+      return this.aggregateDetailedData([]);
+    };
+
+    const result = {
+      campaigns: campaigns.map((c: any) => ({
+        id: c.id,
+        name: c.name,
+        objective: c.objective,
+        status: c.status,
+        daily_budget: c.daily_budget,
+        lifetime_budget: c.lifetime_budget,
+        ...pickMetrics(campaignMap.get(c.id), snapshots.campaign.get(c.id)),
+      })),
+      adsets: adsets.map((a: any) => ({
+        id: a.id,
+        name: a.name,
+        campaignId: a.campaign_id,
+        status: a.status,
+        daily_budget: a.daily_budget,
+        lifetime_budget: a.lifetime_budget,
+        ...pickMetrics(adsetMap.get(a.id), snapshots.adset.get(a.id)),
+      })),
+      ads: ads.map((a: any) => ({
+        id: a.id,
+        name: a.name,
+        adsetId: a.adset_id,
+        campaignId: a.campaign_id,
+        status: a.status,
+        creative: a.creative,
+        ...pickMetrics(adMap.get(a.id), snapshots.ad.get(a.id)),
+      })),
+    };
+
+    if (!this.hasAnyMetrics(result) && campaigns.length === 0) {
+      throw new Error('Facebook API 限流，暂时无法加载数据，请 5-10 分钟后重试');
+    }
+
+    return result;
+  }
+
   private async fetchCampaignInsightsFromFB(cleanId: string, dateStart: string, dateEnd: string, limit: number) {
-    const fromSnapshot = await this.trySnapshotFallback(cleanId, 'campaign', dateStart, dateEnd);
-    if (fromSnapshot) return fromSnapshot;
+    const campaignsResp = await this.fbClient.getCampaigns(cleanId, this.accessToken, limit);
+    const campaigns = campaignsResp.data || [];
+
+    const snapshotMetrics = await this.trySnapshotFallback(cleanId, 'campaign', dateStart, dateEnd);
+    if (snapshotMetrics) {
+      const metricMap = new Map(snapshotMetrics.map((m: any) => [m.id, m]));
+      return campaigns.map((c: any) => ({
+        id: c.id,
+        name: c.name,
+        objective: c.objective,
+        status: c.status,
+        daily_budget: c.daily_budget,
+        lifetime_budget: c.lifetime_budget,
+        ...this.pickMetrics(metricMap.get(c.id)),
+      }));
+    }
 
     const allInsights = await this.fbClient.getInsights(cleanId, this.accessToken, {
       level: 'campaign',
-      fields: 'campaign_id,campaign_name,objective,spend,impressions,clicks,reach,cpm,cpc,ctr,cost_per_action_type,actions,action_values,inline_link_clicks,unique_clicks,cost_per_unique_click,date_start,date_stop',
       time_range: { since: dateStart, until: dateEnd },
-      time_increment: 1,
+      time_increment: 'all_days',
       limit: 500,
     });
+    const insightMap = this.buildInsightMap(allInsights, 'campaign_id');
+    console.log(`[Insights] Campaign: ${campaigns.length} entities, ${allInsights.length} insight rows, ${insightMap.size} matched`);
 
-    const insightMap = new Map<string, any[]>();
-    const metaMap = new Map<string, any>();
-    for (const row of allInsights) {
-      const cid = row.campaign_id;
-      if (!insightMap.has(cid)) insightMap.set(cid, []);
-      insightMap.get(cid)!.push(row);
-      if (!metaMap.has(cid)) {
-        metaMap.set(cid, { id: cid, name: row.campaign_name, objective: row.objective });
-      }
-    }
-
-    const campaignData: any[] = [];
-    for (const [cid, meta] of metaMap) {
-      const rows = insightMap.get(cid) || [];
-      campaignData.push({
-        ...meta,
-        status: 'ACTIVE',
-        ...this.aggregateDetailedData(rows),
-      });
-    }
-
-    return campaignData.slice(0, limit);
+    return campaigns.map((c: any) => ({
+      id: c.id,
+      name: c.name,
+      objective: c.objective,
+      status: c.status,
+      daily_budget: c.daily_budget,
+      lifetime_budget: c.lifetime_budget,
+      ...this.aggregateDetailedData(insightMap.get(c.id) || []),
+    }));
   }
 
   private async fetchAdSetInsightsFromFB(
     cleanId: string, campaignId: string | undefined, start: string, end: string, limit: number
   ) {
-    const fromSnapshot = await this.trySnapshotFallback(cleanId, 'adset', start, end);
-    if (fromSnapshot) {
-      return campaignId ? fromSnapshot.filter((a: any) => a.campaignId === campaignId) : fromSnapshot;
+    const adsetsResp = await this.fbClient.getAdSets(cleanId, this.accessToken, campaignId, limit);
+    const adsets = adsetsResp.data || [];
+
+    const snapshotMetrics = await this.trySnapshotFallback(cleanId, 'adset', start, end);
+    if (snapshotMetrics) {
+      const metricMap = new Map(snapshotMetrics.map((m: any) => [m.id, m]));
+      return adsets.map((a: any) => ({
+        id: a.id,
+        name: a.name,
+        campaignId: a.campaign_id,
+        status: a.status,
+        daily_budget: a.daily_budget,
+        lifetime_budget: a.lifetime_budget,
+        ...this.pickMetrics(metricMap.get(a.id)),
+      }));
     }
 
     const allInsights = await this.fbClient.getInsights(cleanId, this.accessToken, {
       level: 'adset',
-      fields: 'adset_id,adset_name,campaign_id,spend,impressions,clicks,reach,cpm,cpc,ctr,cost_per_action_type,actions,action_values,inline_link_clicks,unique_clicks,cost_per_unique_click,date_start,date_stop',
       time_range: { since: start, until: end },
-      time_increment: 1,
+      time_increment: 'all_days',
       limit: 500,
     });
+    const insightMap = this.buildInsightMap(allInsights, 'adset_id');
 
-    const insightMap = new Map<string, any[]>();
-    const metaMap = new Map<string, any>();
-    for (const row of allInsights) {
-      const aid = row.adset_id;
-      if (!insightMap.has(aid)) insightMap.set(aid, []);
-      insightMap.get(aid)!.push(row);
-      if (!metaMap.has(aid)) {
-        metaMap.set(aid, { id: aid, name: row.adset_name, campaignId: row.campaign_id });
-      }
-    }
-
-    const adsetData: any[] = [];
-    for (const [aid, meta] of metaMap) {
-      if (campaignId && meta.campaignId !== campaignId) continue;
-      const rows = insightMap.get(aid) || [];
-      adsetData.push({
-        ...meta,
-        status: 'ACTIVE',
-        ...this.aggregateDetailedData(rows),
-      });
-    }
-
-    return adsetData.slice(0, limit);
+    return adsets.map((a: any) => ({
+      id: a.id,
+      name: a.name,
+      campaignId: a.campaign_id,
+      status: a.status,
+      daily_budget: a.daily_budget,
+      lifetime_budget: a.lifetime_budget,
+      ...this.aggregateDetailedData(insightMap.get(a.id) || []),
+    }));
   }
 
   private async fetchAdInsightsFromFB(
     cleanId: string, adsetId: string | undefined, start: string, end: string, limit: number
   ) {
-    const fromSnapshot = await this.trySnapshotFallback(cleanId, 'ad', start, end);
-    if (fromSnapshot) {
-      return adsetId ? fromSnapshot.filter((a: any) => a.adsetId === adsetId) : fromSnapshot;
+    const adsResp = await this.fbClient.getAds(cleanId, this.accessToken, { adsetId }, limit);
+    const ads = adsResp.data || [];
+
+    const snapshotMetrics = await this.trySnapshotFallback(cleanId, 'ad', start, end);
+    if (snapshotMetrics) {
+      const metricMap = new Map(snapshotMetrics.map((m: any) => [m.id, m]));
+      return ads.map((a: any) => ({
+        id: a.id,
+        name: a.name,
+        adsetId: a.adset_id,
+        campaignId: a.campaign_id,
+        status: a.status,
+        creative: a.creative,
+        ...this.pickMetrics(metricMap.get(a.id)),
+      }));
     }
 
     const allInsights = await this.fbClient.getInsights(cleanId, this.accessToken, {
       level: 'ad',
-      fields: 'ad_id,ad_name,adset_id,campaign_id,spend,impressions,clicks,reach,cpm,cpc,ctr,cost_per_action_type,actions,action_values,inline_link_clicks,unique_clicks,cost_per_unique_click,date_start,date_stop',
       time_range: { since: start, until: end },
-      time_increment: 1,
+      time_increment: 'all_days',
       limit: 500,
     });
+    const insightMap = this.buildInsightMap(allInsights, 'ad_id');
 
-    const insightMap = new Map<string, any[]>();
-    const metaMap = new Map<string, any>();
-    for (const row of allInsights) {
-      const aid = row.ad_id;
-      if (!insightMap.has(aid)) insightMap.set(aid, []);
-      insightMap.get(aid)!.push(row);
-      if (!metaMap.has(aid)) {
-        metaMap.set(aid, {
-          id: aid,
-          name: row.ad_name,
-          adsetId: row.adset_id,
-          campaignId: row.campaign_id,
-        });
-      }
-    }
+    return ads.map((a: any) => ({
+      id: a.id,
+      name: a.name,
+      adsetId: a.adset_id,
+      campaignId: a.campaign_id,
+      status: a.status,
+      creative: a.creative,
+      ...this.aggregateDetailedData(insightMap.get(a.id) || []),
+    }));
+  }
 
-    const adData: any[] = [];
-    for (const [aid, meta] of metaMap) {
-      if (adsetId && meta.adsetId !== adsetId) continue;
-      const rows = insightMap.get(aid) || [];
-      adData.push({
-        ...meta,
-        status: 'ACTIVE',
-        ...this.aggregateDetailedData(rows),
-      });
-    }
-
-    return adData.slice(0, limit);
+  /** Extract metric fields from a snapshot/cache row, stripping metadata keys */
+  private pickMetrics(row: any | undefined) {
+    if (!row) return this.aggregateDetailedData([]);
+    const {
+      id, name, status, objective, campaignId, adsetId, creative,
+      daily_budget, lifetime_budget, campaign_id, adset_id, ...metrics
+    } = row;
+    return metrics;
   }
 
   private async fetchTrendsFromFB(cleanId: string, dateStart: string, dateEnd: string, breakdown: string) {

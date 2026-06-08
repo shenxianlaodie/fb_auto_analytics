@@ -29,8 +29,8 @@ export const Dashboard: React.FC = () => {
   }, [fetchDashboard]);
 
   const pieData = campaignInsights.map((c) => ({
-    name: c.name,
-    value: c.spend,
+    name: c.name || c.id,
+    value: c.spend ?? 0,
   }));
 
   return (

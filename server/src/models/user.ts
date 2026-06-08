@@ -7,6 +7,7 @@ export interface User {
   email: string | null;
   access_token: string;
   token_expires_at: string | null;
+  accounts_synced_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -46,4 +47,11 @@ export async function getUserByFacebookId(facebookUserId: string): Promise<User 
 
 export async function getUserById(id: string): Promise<User | null> {
   return queryOne('SELECT * FROM users WHERE id = $1', [id]);
+}
+
+export async function touchAccountsSyncedAt(userId: string): Promise<void> {
+  await queryOne(
+    `UPDATE users SET accounts_synced_at = NOW(), updated_at = NOW() WHERE id = $1 RETURNING id`,
+    [userId]
+  );
 }

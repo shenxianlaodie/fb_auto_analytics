@@ -9,6 +9,8 @@ import { AuthCallback } from './pages/AuthCallback';
 import { Dashboard } from './pages/Dashboard';
 import { AdsManager } from './pages/AdsManager';
 import { BatchPublish } from './pages/BatchPublish';
+import { ShopMapping } from './pages/ShopMapping';
+import { ShopTokens } from './pages/ShopTokens';
 import { useAuthStore } from './store/authStore';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -35,6 +37,8 @@ function AppRoutes() {
         <Route index element={<Dashboard />} />
         <Route path="ads" element={<AdsManager />} />
         <Route path="batch" element={<BatchPublish />} />
+        <Route path="shop-mapping" element={<ShopMapping />} />
+        <Route path="shop-tokens" element={<ShopTokens />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
@@ -55,7 +59,9 @@ export default function App() {
         }}
       >
         <AntApp>
-          <BrowserRouter>
+          <BrowserRouter
+            future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+          >
             <AppRoutes />
           </BrowserRouter>
         </AntApp>
