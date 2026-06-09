@@ -1,3 +1,5 @@
+import { isAccountRateLimit, isRateLimitError } from './fbRateLimit';
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -6,30 +8,6 @@ interface QueueTask<T> {
   fn: () => Promise<T>;
   resolve: (value: T) => void;
   reject: (reason: unknown) => void;
-}
-
-function isRateLimitError(err: any): boolean {
-  const status = err?.response?.status;
-  const code = err?.response?.data?.error?.code;
-  const subcode = err?.response?.data?.error?.error_subcode;
-  return (
-    status === 429 ||
-    status === 403 ||
-    status === 400 && code === 17 ||
-    code === 4 ||
-    code === 17 ||
-    code === 32 ||
-    code === 613 ||
-    code === 80004 ||
-    subcode === 2446079
-  );
-}
-
-/** Ad-account level limit — retrying immediately won't help */
-function isAccountRateLimit(err: any): boolean {
-  const code = err?.response?.data?.error?.code;
-  const subcode = err?.response?.data?.error?.error_subcode;
-  return code === 17 && subcode === 2446079;
 }
 
 class FBRequestQueue {

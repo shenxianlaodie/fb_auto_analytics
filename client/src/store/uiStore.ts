@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { todayDateRange } from '../utils/todayRange';
 
 interface UIState {
   sidebarCollapsed: boolean;
@@ -7,15 +8,11 @@ interface UIState {
   setDateRange: (range: [string, string]) => void;
 }
 
-function getDefaultDateRange(): [string, string] {
-  const end = new Date();
-  const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
-  return [start.toISOString().split('T')[0], end.toISOString().split('T')[0]];
-}
+const defaultRange = todayDateRange();
 
 export const useUIStore = create<UIState>((set) => ({
   sidebarCollapsed: false,
-  dateRange: getDefaultDateRange(),
+  dateRange: [defaultRange.dateStart, defaultRange.dateEnd],
 
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 

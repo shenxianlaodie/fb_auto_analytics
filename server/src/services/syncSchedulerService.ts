@@ -7,6 +7,7 @@ import { MetricsSyncService } from './metricsSyncService';
 import { UtmMatchService } from './utmMatchService';
 import { todayDateRange } from '../utils/todayRange';
 import { getActiveShopIds, isActiveShop } from './activeSyncRegistry';
+import { isAccountInCooldown, isAccountRateLimit, markAccountCooldown } from './fbRateLimit';
 
 /** 热路径（用户正在查看）：指标/UTM 约 2 分钟 */
 const HOT_METRICS_TTL_MS = 2 * 60 * 1000;
@@ -19,6 +20,8 @@ const COLD_UTM_TTL_MS = 10 * 60 * 1000;
 const STRUCTURE_TTL_MS = 6 * 60 * 60 * 1000;
 
 const SHOP_SYNC_GAP_MS = 800;
+/** 账户间同步间隔：把一轮 Cron 的账户摊平，降低 Facebook 限流 burst */
+const ACCOUNT_SYNC_GAP_MS = 1500;
 
 const inflightAccounts = new Set<string>();
 const inflightShops = new Set<string>();
@@ -96,6 +99,12 @@ export function enqueueShopUtmSync(
 
 async function runRefreshJob(input: RefreshInput): Promise<void> {
   const cleanId = input.accountId.replace('act_', '');
+
+  if (!input.force && isAccountInCooldown(cleanId)) {
+    console.log(`[SyncScheduler] account=${cleanId} 处于限流冷却中，跳过本次同步`);
+    return;
+  }
+
   console.log(`[SyncScheduler] refresh start account=${cleanId} ${input.dateStart}~${input.dateEnd} (hot)`);
 
   const [structureState, metricsState] = await Promise.all([
@@ -113,33 +122,51 @@ async function runRefreshJob(input: RefreshInput): Promise<void> {
     return;
   }
 
-  await Promise.all([
-    needStructure ? setRefreshing(cleanId, 'structure', input.dateStart, input.dateEnd, true) : null,
-    needMetrics ? setRefreshing(cleanId, 'metrics', input.dateStart, input.dateEnd, true) : null,
-  ].filter(Boolean));
+  // 指标优先：用户最关心 spend/cpm；结构同步失败不应阻塞指标入库
+  let metricsOk = !needMetrics;
+  let structureOk = !needStructure;
+  let lastErr: any = null;
 
-  try {
-    if (needStructure) {
-      const structureSync = new StructureSyncService(input.accessToken);
-      await structureSync.syncStructure(input.accountId, input.dateStart, input.dateEnd);
-    }
-
-    if (needMetrics) {
+  if (needMetrics) {
+    await setRefreshing(cleanId, 'metrics', input.dateStart, input.dateEnd, true);
+    try {
       const metricsSync = new MetricsSyncService(input.accessToken);
       await metricsSync.syncMetrics(input.accountId, input.dateStart, input.dateEnd);
+      metricsOk = true;
+    } catch (err: any) {
+      lastErr = err;
+      if (isAccountRateLimit(err)) markAccountCooldown(cleanId);
+      console.error(`[SyncScheduler] metrics failed account=${cleanId}:`, err.message);
+    } finally {
+      await setRefreshing(cleanId, 'metrics', input.dateStart, input.dateEnd, false);
     }
+  }
 
-    if (input.accountName) {
-      await persistAdAccount(input);
+  if (needStructure) {
+    await setRefreshing(cleanId, 'structure', input.dateStart, input.dateEnd, true);
+    try {
+      const structureSync = new StructureSyncService(input.accessToken);
+      await structureSync.syncStructure(input.accountId, input.dateStart, input.dateEnd);
+      structureOk = true;
+    } catch (err: any) {
+      lastErr = err;
+      if (isAccountRateLimit(err)) markAccountCooldown(cleanId);
+      console.error(`[SyncScheduler] structure failed account=${cleanId}:`, err.message);
+    } finally {
+      await setRefreshing(cleanId, 'structure', input.dateStart, input.dateEnd, false);
     }
-    console.log(
-      `[SyncScheduler] refresh done account=${cleanId} structure=${needStructure} metrics=${needMetrics}`
-    );
-  } finally {
-    await Promise.all([
-      needStructure ? setRefreshing(cleanId, 'structure', input.dateStart, input.dateEnd, false) : null,
-      needMetrics ? setRefreshing(cleanId, 'metrics', input.dateStart, input.dateEnd, false) : null,
-    ].filter(Boolean));
+  }
+
+  if (input.accountName) {
+    await persistAdAccount(input);
+  }
+
+  console.log(
+    `[SyncScheduler] refresh done account=${cleanId} metrics=${metricsOk} structure=${structureOk}`
+  );
+
+  if (!metricsOk && !structureOk && lastErr) {
+    throw lastErr;
   }
 }
 
@@ -181,16 +208,30 @@ export async function runMetricsCron(): Promise<void> {
      UNION SELECT DISTINCT account_id AS ad_account_id FROM ad_accounts`
   );
 
+  // 先筛出本轮需要同步的账户，再均匀摊到时间窗内，避免 35 账户瞬间扎堆触发限流
+  const due: Array<{ cleanId: string; hot: boolean }> = [];
   for (const row of accounts) {
     const accountId = row.ad_account_id;
     if (!accountId) continue;
     const cleanId = String(accountId).replace('act_', '');
+
+    if (isAccountInCooldown(cleanId)) continue;
+
     const hot = activeIds.has(cleanId);
     const ttl = hot ? HOT_METRICS_TTL_MS : COLD_METRICS_TTL_MS;
 
     const state = await getSyncState(cleanId, 'metrics', dateStart, dateEnd);
     if (!isStale(state?.last_synced_at, ttl)) continue;
 
+    due.push({ cleanId, hot });
+  }
+
+  if (due.length === 0) return;
+
+  // 活跃账户优先；其余按账户间隔摊平
+  due.sort((a, b) => (a.hot === b.hot ? 0 : a.hot ? -1 : 1));
+
+  for (const { cleanId } of due) {
     const tokenRow = await query(
       `SELECT u.access_token FROM ad_accounts aa
        JOIN users u ON aa.user_id = u.id
@@ -205,6 +246,8 @@ export async function runMetricsCron(): Promise<void> {
       dateEnd,
       accessToken: token,
     });
+
+    await sleep(ACCOUNT_SYNC_GAP_MS);
   }
 }
 
@@ -247,6 +290,9 @@ export async function runStructureCron(): Promise<void> {
   const accounts = await query(`SELECT DISTINCT ad_account_id FROM fb_campaigns`);
   for (const row of accounts) {
     const cleanId = String(row.ad_account_id).replace('act_', '');
+
+    if (isAccountInCooldown(cleanId)) continue;
+
     const state = await getSyncState(cleanId, 'structure', dateStart, dateEnd);
     if (!isStale(state?.last_synced_at, STRUCTURE_TTL_MS)) continue;
 
@@ -256,5 +302,7 @@ export async function runStructureCron(): Promise<void> {
       dateEnd,
       accessToken: users[0].access_token,
     });
+
+    await sleep(ACCOUNT_SYNC_GAP_MS);
   }
 }

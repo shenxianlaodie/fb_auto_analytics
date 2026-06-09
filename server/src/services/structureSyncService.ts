@@ -27,8 +27,8 @@ export class StructureSyncService {
     const cleanId = accountId.replace('act_', '');
 
     const [campaigns, adsets, ads] = await Promise.all([
-      this.fbClient.getCampaigns(cleanId, this.accessToken, 500).then((r) => r.data || []),
-      this.fbClient.getAdSets(cleanId, this.accessToken, undefined, 500).then((r) => r.data || []),
+      this.fbClient.getAllCampaigns(cleanId, this.accessToken),
+      this.fbClient.getAllAdSets(cleanId, this.accessToken),
       this.fbClient.getAllAds(cleanId, this.accessToken),
     ]);
 

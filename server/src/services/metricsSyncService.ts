@@ -4,6 +4,16 @@ import { getFbAdsMeta, getFbAdsets } from '../models/fbStructure';
 import { touchSyncState } from '../models/syncState';
 import { StructureSyncService } from './structureSyncService';
 
+/** 投放状态刷新的内存 TTL：避免每次 metrics（热账户 2min）都全量拉 status */
+const STATUS_REFRESH_TTL_MS = 5 * 60 * 1000;
+const lastStatusSyncAt = new Map<string, number>();
+
+function isStatusStale(accountId: string): boolean {
+  const last = lastStatusSyncAt.get(accountId);
+  if (!last) return true;
+  return Date.now() - last > STATUS_REFRESH_TTL_MS;
+}
+
 /** 仅 1 次 FB insights(ad) 调用，写入 fb_ads 指标 */
 export class MetricsSyncService {
   private fbClient: FacebookClient;
@@ -26,6 +36,8 @@ export class MetricsSyncService {
       console.log(`[MetricsSync] account=${cleanId} removed ${removed} legacy multi-day rows`);
     }
 
+    // status 刷新成本高（3+ 次分页），按 TTL 降频，不随每次 metrics 全量拉
+    const shouldSyncStatus = isStatusStale(cleanId);
     const statusSync = new StructureSyncService(this.accessToken);
 
     const [insightRows] = await Promise.all([
@@ -35,7 +47,16 @@ export class MetricsSyncService {
         time_increment: 'all_days',
         limit: 500,
       }),
-      statusSync.syncDeliveryStatus(accountId),
+      shouldSyncStatus
+        ? statusSync
+            .syncDeliveryStatus(accountId)
+            .then(() => {
+              lastStatusSyncAt.set(cleanId, Date.now());
+            })
+            .catch((err: any) => {
+              console.warn(`[MetricsSync] status 刷新失败 account=${cleanId}:`, err.message);
+            })
+        : Promise.resolve(),
     ]);
 
     const [metaList, adsetList] = await Promise.all([
@@ -74,7 +95,9 @@ export class MetricsSyncService {
     }
 
     await touchSyncState(cleanId, 'metrics', dateStart, dateEnd);
-    console.log(`[MetricsSync] account=${cleanId} synced=${synced} (insights + status)`);
+    console.log(
+      `[MetricsSync] account=${cleanId} synced=${synced} (insights${shouldSyncStatus ? ' + status' : ''})`
+    );
     return { synced };
   }
 }

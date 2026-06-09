@@ -4,6 +4,7 @@ import { AdSyncService } from '../services/adSyncService';
 import { ShopTokenService } from '../services/shopTokenService';
 import { UtmMatchService } from '../services/utmMatchService';
 import { HierarchyService } from '../services/hierarchyService';
+import { DashboardService } from '../services/dashboardService';
 import { enqueueRefresh, enqueueShopUtmSync } from '../services/syncSchedulerService';
 import { touchActiveSync } from '../services/activeSyncRegistry';
 import { todayDateRange } from '../utils/todayRange';
@@ -18,6 +19,7 @@ analyticsRouter.use(authMiddleware);
 
 const shopTokenService = new ShopTokenService();
 const hierarchyService = new HierarchyService();
+const dashboardService = new DashboardService();
 
 function defaultDateRange() {
   return todayDateRange();
@@ -56,8 +58,6 @@ analyticsRouter.get('/hierarchy', async (req: AuthRequest, res: Response) => {
       shopDomain: shopDomain as string | undefined,
     });
 
-    touchActiveSync(accountId as string, resolvedShopId);
-
     const result = await hierarchyService.getHierarchyFromDb(
       accountId as string,
       range.dateStart,
@@ -65,6 +65,43 @@ analyticsRouter.get('/hierarchy', async (req: AuthRequest, res: Response) => {
       resolvedShopId
     );
 
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/analytics/dashboard — DB-First 仪表盘（FB + UTM）
+analyticsRouter.get('/dashboard', async (req: AuthRequest, res: Response) => {
+  try {
+    const { accountId, accountName, dateStart, dateEnd } = req.query;
+    if (!accountId) {
+      res.status(400).json({ error: '缺少 accountId' });
+      return;
+    }
+    const range = dateStart && dateEnd
+      ? { dateStart: dateStart as string, dateEnd: dateEnd as string }
+      : defaultDateRange();
+    const result = await dashboardService.getDashboard(
+      accountId as string,
+      range.dateStart,
+      range.dateEnd,
+      accountName as string | undefined
+    );
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/analytics/cross-account — 跨账户汇总（DB-First）
+analyticsRouter.get('/cross-account', async (req: AuthRequest, res: Response) => {
+  try {
+    const { dateStart, dateEnd } = req.query;
+    const range = dateStart && dateEnd
+      ? { dateStart: dateStart as string, dateEnd: dateEnd as string }
+      : defaultDateRange();
+    const result = await dashboardService.getCrossAccountSummary(range.dateStart, range.dateEnd);
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

@@ -184,6 +184,28 @@ export class FacebookClient {
     return this.fetchAllPages(`act_${accountId}/ads`, accessToken, 'id,status');
   }
 
+  async getAllCampaigns(
+    accountId: string,
+    accessToken: string,
+    pageSize: number = 100,
+    maxPages: number = 50
+  ): Promise<any[]> {
+    const fields =
+      'id,name,objective,status,special_ad_categories,created_time,updated_time,daily_budget,lifetime_budget';
+    return this.fetchAllPages(`act_${accountId}/campaigns`, accessToken, fields, pageSize, maxPages);
+  }
+
+  async getAllAdSets(
+    accountId: string,
+    accessToken: string,
+    pageSize: number = 100,
+    maxPages: number = 50
+  ): Promise<any[]> {
+    const fields =
+      'id,name,campaign_id,status,targeting,bid_strategy,daily_budget,lifetime_budget,billing_event,optimization_goal,start_time,end_time,created_time';
+    return this.fetchAllPages(`act_${accountId}/adsets`, accessToken, fields, pageSize, maxPages);
+  }
+
   async getCampaigns(accountId: string, accessToken: string, limit: number = 25, after?: string): Promise<any> {
     const params: Record<string, any> = {
       fields: 'id,name,objective,status,special_ad_categories,created_time,updated_time,daily_budget,lifetime_budget',
@@ -323,8 +345,18 @@ export class FacebookClient {
         : JSON.stringify(time_range);
     }
 
-    const resp = await this.get(`act_${accountId}/insights`, accessToken, queryParams);
-    return resp.data || [];
+    // 分页拉取全部 insights，避免广告数 > limit 时数据不全（导致用户反复刷新）
+    const all: any[] = [];
+    let after: string | undefined;
+    const maxPages = 20;
+    for (let page = 0; page < maxPages; page++) {
+      const params = after ? { ...queryParams, after } : queryParams;
+      const resp = await this.get(`act_${accountId}/insights`, accessToken, params);
+      all.push(...(resp.data || []));
+      after = resp.paging?.cursors?.after;
+      if (!after || !resp.paging?.next) break;
+    }
+    return all;
   }
 
   // --- Ad Creatives ---

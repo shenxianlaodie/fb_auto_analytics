@@ -1,19 +1,21 @@
 # 前端表头与数据库映射关系
 
 > 页面：`client/src/pages/AdsManager.tsx`（广告管理）
-> 更新日期：2026-06-05
+> 更新日期：2026-06-09
 
 ---
 
-## 数据流总览（方案 A：DB-First）
+## 数据流总览（方案 A：DB-First，纯后台静默）
 
 | 层级 | 主接口 | 结构字段来源 | 指标字段来源 |
 |------|--------|-------------|-------------|
 | 三层表格 | `GET /analytics/hierarchy` | `fb_campaigns` / `fb_adsets` / `fb_ads_meta` | 广告层 `fb_ads`；组/系列层子广告汇总 |
-| UTM 衍生列 | 同上（后端已合并） | — | `shoplazza_utm` 匹配 `ad_id=utm_content` |
-| 后台同步 | `POST /analytics/refresh` | StructureSync 每 6h | MetricsSync 每 15min；Shoplazza 每 5min |
+| UTM 衍生列 | 同上（读库时现场合并） | — | `shoplazza_utm` 匹配 `ad_id=utm_content` |
+| 后台同步 | Cron 定时任务（前端不触发） | StructureSync 每 6h | MetricsSync 每 15min；Shoplazza 每 5min |
 
-**前端打开页面：0 次 FB API**，读 DB；后台按 TTL 异步刷新。
+**前端：只读库**（`GET /analytics/hierarchy`），0 次 FB / Shoplazza API；每 60 秒轮询读库获取 Cron 写入的新数据。
+
+**后台：Cron 静默同步** → 入库 → 前端读库展示；`POST /analytics/refresh` 保留供运维/调试，前端不再自动调用。
 
 **查询日期：** 固定为**今天**（`date_start = date_end = 今日`）
 
@@ -35,17 +37,18 @@ fb_ads.ad_id  ===  shoplazza_utm.utm_value  （且 dimension = 'utm_content'）
 
 ## 计算公式速查
 
-| 指标 | 公式 | 分母字段 |
-|------|------|----------|
+| 指标 | 公式 | 分母/分子字段 |
+|------|------|---------------|
+| **成效** | 直接展示 | `shoplazza_utm.orders`（API 字段 `utmOrders`） |
 | 单次连接点击花费 | `spend / utmUv` | `shoplazza_utm.uv` |
 | 单次成效花费 | `spend / utmOrders` | `shoplazza_utm.orders` |
 | ROAS | `utmSales / spend` | `shoplazza_utm.sales` ÷ `fb_ads.spend` |
 | **单次加购费用** | `spend / utmAddToCart` | `shoplazza_utm.add_to_cart` |
 | **单次结账费用** | `spend / utmBeginCheckout` | `shoplazza_utm.begin_checkout` |
 
-- **广告层：** 直接用该行字段计算
-- **广告组 / 系列层：** 汇总子广告对应字段后计算
-- 分母为 0 时显示 `-`
+- **广告层：** 直接用该行字段计算 / 展示
+- **广告组 / 系列层：** 汇总子广告对应字段后计算 / 展示
+- 分母为 0 或成效为 0 时显示 `-`
 
 ---
 
@@ -59,6 +62,7 @@ fb_ads.ad_id  ===  shoplazza_utm.utm_value  （且 dimension = 'utm_content'）
 | 已花费 | `spend` | — | `fb_ads.spend` |
 | CPM | `cpm` | — | `fb_ads.cpm` |
 | 单次连接点击花费 | `uniqueClicks` | `spend / utmUv` | `fb_ads` + `shoplazza_utm.uv` |
+| **成效** | `utmOrders` | 直接展示 | `shoplazza_utm.orders`（Shoplazza `orders_count`） |
 | 单次成效花费 | `purchases` | `spend / utmOrders` | `fb_ads` + `shoplazza_utm.orders` |
 | ROAS | `costPerPurchase` | `utmSales / spend` | `shoplazza_utm.sales` + `fb_ads.spend` |
 | **单次加购费用** | `costPerAddToCart` | `spend / utmAddToCart` | `fb_ads` + `shoplazza_utm.add_to_cart` |
@@ -77,6 +81,7 @@ fb_ads.ad_id  ===  shoplazza_utm.utm_value  （且 dimension = 'utm_content'）
 | 已花费 | `spend` | — | 子广告 `fb_ads` 汇总 |
 | CPM | `cpm` | — | 子广告 `fb_ads` 加权汇总 |
 | 单次连接点击花费 | `uniqueClicks` | `Σspend / ΣutmUv` | 子广告汇总 |
+| **成效** | `utmOrders` | `ΣutmOrders` 直接展示 | 子广告 `shoplazza_utm.orders` 汇总 |
 | 单次成效花费 | `purchases` | `Σspend / ΣutmOrders` | 子广告汇总 |
 | ROAS | `costPerPurchase` | `ΣutmSales / Σspend` | 子广告汇总 |
 | **单次加购费用** | `costPerAddToCart` | `Σspend / ΣutmAddToCart` | 子广告汇总 |
@@ -92,6 +97,7 @@ fb_ads.ad_id  ===  shoplazza_utm.utm_value  （且 dimension = 'utm_content'）
 | 广告系列名 | `name` | — | Facebook API |
 | 投放状态 | `status` | — | Facebook API |
 | 预算 | `budget` | — | Facebook API |
+| **成效** | `utmOrders` | `ΣutmOrders` 直接展示 | 子广告 `shoplazza_utm.orders` 汇总 |
 | 单次成效花费 | `purchases` | `Σspend / ΣutmOrders` | 子广告汇总 |
 | 已花费金额 | `spend` | — | 子广告 `fb_ads` 汇总 |
 | CPM | `cpm` | — | 子广告 `fb_ads` 加权汇总 |
@@ -115,17 +121,38 @@ fb_ads.ad_id  ===  shoplazza_utm.utm_value  （且 dimension = 'utm_content'）
 
 ### `shoplazza_utm`
 
-| 库字段 | Shoplazza API | 用途 |
-|--------|--------------|------|
-| `uv` | `view_client_count` | 单次连接点击花费分母 |
-| `add_to_cart` | `add_to_cart_count` | 单次加购费用分母 |
-| `begin_checkout` | `begin_checkout_count` | 单次结账费用分母 |
-| `orders` | `orders_count` | 单次成效花费分母 |
-| `sales` | `product_sales` | ROAS 分子 |
+| 库字段 | Shoplazza API | API 返回字段 | 用途 |
+|--------|--------------|-------------|------|
+| `uv` | `view_client_count` | `utmUv` | 单次连接点击花费分母 |
+| `add_to_cart` | `add_to_cart_count` | `utmAddToCart` | 单次加购费用分母 |
+| `begin_checkout` | `begin_checkout_count` | `utmBeginCheckout` | 单次结账费用分母 |
+| `orders` | `orders_count` | `utmOrders` | **成效列直接展示**；单次成效花费分母 |
+| `sales` | `product_sales` | `utmSales` | ROAS 分子 |
 
 ---
 
 ## 五、变更记录
+
+**2026-06-09 v8** — 按讨论文档修改意见：
+
+- 广告管理/仪表盘支持日期区间筛选（UTC+8）
+- 仪表盘改为 DB-First（`/analytics/dashboard`）
+- 新增跨账户汇总页（`/analytics/cross-account`）
+- utm_campaign 同步入库 + 广告层「活动关键词」列
+- UTM 未匹配且有花费的广告行标红
+- 同步状态/告警提示（最后同步时间 + syncWarnings）
+
+**2026-06-09 v7** — 纯后台静默 + 前端只读库：
+
+- 前端移除自动 `POST /analytics/refresh`（打开页 / 切账户 / 切标签页）
+- 「刷新」按钮改为仅 `GET /analytics/hierarchy` 重新读库
+- 后台 Cron 负责 FB / UTM 同步入库
+
+**2026-06-09 v6** — 三层新增「成效」列：
+
+- 直接展示 UTM 订单数（`shoplazza_utm.orders` / Shoplazza `orders_count` / API `utmOrders`）
+- 广告组 / 系列层为子广告 `utmOrders` 汇总
+- 值为 0 时显示 `-`
 
 **2026-06-05 v2** — 新增三层「单次加购 / 单次结账」费用列，改为 UTM 计算：
 
@@ -151,4 +178,5 @@ fb_ads.ad_id  ===  shoplazza_utm.utm_value  （且 dimension = 'utm_content'）
 - [x] 广告组/系列「已花费」「CPM」从 `fb_ads` 汇总
 - [x] 账户-店铺映射管理页 + 查询固定今天
 - [x] 移除 ROAS(购物)、单次链接点击费用(独立)
+- [x] 三层：成效列（UTM `orders_count` 直接展示）
 - [ ] Dashboard 接入 Shoplazza 数据

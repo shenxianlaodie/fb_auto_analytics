@@ -10,6 +10,7 @@ import {
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   ReloadOutlined,
+  GlobalOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useLocation, Outlet } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
@@ -62,6 +63,7 @@ export const AppLayout: React.FC = () => {
   const menuItems = [
     { key: '/', icon: <DashboardOutlined />, label: '数据仪表盘' },
     { key: '/ads', icon: <RocketOutlined />, label: '广告管理' },
+    { key: '/cross-account', icon: <GlobalOutlined />, label: '跨账户汇总' },
     { key: '/batch', icon: <UploadOutlined />, label: '批量发布' },
     { key: '/shop-tokens', icon: <KeyOutlined />, label: '店铺 Token' },
     { key: '/shop-mapping', icon: <ShopOutlined />, label: '店铺映射' },

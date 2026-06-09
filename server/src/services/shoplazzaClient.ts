@@ -105,7 +105,20 @@ export class ShoplazzaClient {
     return this.aggregateByUtmContent(rows);
   }
 
-  /** @deprecated 保留兼容，内部转调 fetchUtmContent */
+  /** 拉取 utm_campaign 维度全量报表并入库 */
+  async fetchUtmCampaign(
+    shop: ShopCredential,
+    dateStart: string,
+    dateEnd: string
+  ): Promise<ShoplazzaUtmRow[]> {
+    if (!shop.accessToken) {
+      throw new Error(`店铺 ${shop.shopDomain} 缺少 access token`);
+    }
+    const rows = await this.fetchAllPages(shop, dateStart, dateEnd);
+    return this.aggregateByUtmCampaign(rows);
+  }
+
+  /** @deprecated 保留兼容，内部转调 fetchUtmContent / fetchUtmCampaign */
   async fetchUtmByDimension(
     shop: ShopCredential,
     dimension: 'utm_content' | 'utm_campaign',
@@ -113,9 +126,8 @@ export class ShoplazzaClient {
     dateEnd: string,
     filterValues?: string[]
   ): Promise<ShoplazzaUtmRow[]> {
-    if (dimension !== 'utm_content') {
-      console.warn('[Shoplazza] 当前仅支持 utm_content 维度同步');
-      return [];
+    if (dimension === 'utm_campaign') {
+      return this.fetchUtmCampaign(shop, dateStart, dateEnd);
     }
     return this.fetchUtmContent(shop, dateStart, dateEnd, filterValues);
   }
@@ -187,6 +199,16 @@ export class ShoplazzaClient {
     return [...map.values()];
   }
 
+  private aggregateByUtmCampaign(rows: any[]): ShoplazzaUtmRow[] {
+    const map = new Map<string, ShoplazzaUtmRow>();
+    for (const row of rows) {
+      const parsed = this.parseUtmCampaignRow(row);
+      if (!parsed) continue;
+      this.mergeUtmRow(map, parsed);
+    }
+    return [...map.values()];
+  }
+
   private mergeUtmRow(map: Map<string, ShoplazzaUtmRow>, row: ShoplazzaUtmRow) {
     const existing = map.get(row.utmValue);
     if (!existing) {
@@ -206,6 +228,18 @@ export class ShoplazzaClient {
     if (!utmValue || utmValue === '(not set)' || utmValue === 'not set') {
       return null;
     }
+    return this.parseUtmMetricsRow(utmValue, row);
+  }
+
+  private parseUtmCampaignRow(row: any): ShoplazzaUtmRow | null {
+    const utmValue = String(row.utm_campaign || '').trim();
+    if (!utmValue || utmValue === '(not set)' || utmValue === 'not set') {
+      return null;
+    }
+    return this.parseUtmMetricsRow(utmValue, row);
+  }
+
+  private parseUtmMetricsRow(utmValue: string, row: any): ShoplazzaUtmRow {
     return {
       utmValue,
       uv: this.toInt(row.view_client_count ?? row.uv),

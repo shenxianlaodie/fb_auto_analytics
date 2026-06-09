@@ -35,3 +35,7 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #bfbfbf;
 }
+
+.ant-table-wrapper .utm-unmatched-row > td {
+  background-color: #fff1f0 !important;
+}

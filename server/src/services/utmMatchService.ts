@@ -67,7 +67,31 @@ export class UtmMatchService {
       });
     }
 
-    console.log(`[UTM] shop=${shop.shopDomain} utm_content=${contentRows.length}`);
+    const campaignRows = await this.shoplazzaClient.fetchUtmCampaign(
+      shop,
+      dateStart,
+      dateEnd
+    );
+
+    for (const row of campaignRows) {
+      await upsertShoplazzaUtm({
+        shopId: shop.shopId,
+        dimension: 'utm_campaign',
+        utmValue: row.utmValue,
+        uv: row.uv,
+        pv: row.pv,
+        addToCart: row.addToCart,
+        beginCheckout: row.beginCheckout,
+        orders: row.orders,
+        sales: row.sales,
+        dateStart,
+        dateEnd,
+      });
+    }
+
+    console.log(
+      `[UTM] shop=${shop.shopDomain} utm_content=${contentRows.length} utm_campaign=${campaignRows.length}`
+    );
 
     return {
       shopId: shop.shopId,

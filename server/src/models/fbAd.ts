@@ -62,9 +62,36 @@ export async function getFbAdsByDateRange(
   dateStart: string,
   dateEnd: string
 ): Promise<FbAdRecord[]> {
+  if (dateStart === dateEnd) {
+    return query(
+      `SELECT * FROM fb_ads
+       WHERE ad_account_id = $1 AND date_start = $2 AND date_end = $3
+       ORDER BY spend DESC`,
+      [adAccountId, dateStart, dateEnd]
+    );
+  }
+
   return query(
-    `SELECT * FROM fb_ads
-     WHERE ad_account_id = $1 AND date_start = $2 AND date_end = $3
+    `SELECT
+       ad_account_id,
+       ad_id,
+       MAX(ad_name) AS ad_name,
+       MAX(post_id) AS post_id,
+       MAX(story_id) AS story_id,
+       SUM(spend)::numeric AS spend,
+       MAX(budget)::numeric AS budget,
+       CASE WHEN SUM(spend) > 0 AND SUM(CASE WHEN cpm > 0 THEN spend ELSE 0 END) > 0
+         THEN (SUM(CASE WHEN cpm > 0 THEN spend * cpm ELSE 0 END) / SUM(CASE WHEN cpm > 0 THEN spend ELSE 0 END))::numeric
+         ELSE 0
+       END AS cpm,
+       MIN(date_start) AS date_start,
+       MAX(date_end) AS date_end,
+       MAX(synced_at) AS synced_at
+     FROM fb_ads
+     WHERE ad_account_id = $1
+       AND date_start >= $2 AND date_end <= $3
+       AND date_start = date_end
+     GROUP BY ad_account_id, ad_id
      ORDER BY spend DESC`,
     [adAccountId, dateStart, dateEnd]
   );

@@ -1,7 +1,8 @@
 import { getFbAdsByDateRange } from '../models/fbAd';
-import { getFbCampaigns, getFbAdsets, getFbAdsMeta } from '../models/fbStructure';
-import { getShoplazzaUtmForAccount } from '../models/shoplazzaUtm';
+import { getFbCampaigns, getFbAdsets, getFbAdsMeta, FbAdMetaRecord } from '../models/fbStructure';
+import { getShoplazzaUtmForAccount, getShoplazzaUtmCampaignRows, ShoplazzaUtmRecord } from '../models/shoplazzaUtm';
 import { getLatestSyncMeta } from '../models/syncState';
+import { todayDateRange } from '../utils/todayRange';
 
 interface RollupMetrics {
   spend: number;
@@ -14,6 +15,61 @@ function rollupDeliveryStatus(statuses: Array<string | null | undefined>): strin
   const list = statuses.filter((s): s is string => !!s);
   if (list.length === 0) return 'PAUSED';
   return list.some((s) => s === 'ACTIVE') ? 'ACTIVE' : 'PAUSED';
+}
+
+function findUtmCampaignForAd(
+  meta: FbAdMetaRecord,
+  campaignRows: ShoplazzaUtmRecord[]
+): ShoplazzaUtmRecord | undefined {
+  const keys = [meta.post_id, meta.story_id]
+    .filter((v): v is string => !!v)
+    .map((v) => String(v).trim())
+    .filter(Boolean);
+  if (keys.length === 0) return undefined;
+  return campaignRows.find((row) => {
+    const val = row.utm_value || '';
+    return keys.some((k) => val.includes(k));
+  });
+}
+
+function buildSyncWarnings(
+  syncMeta: Awaited<ReturnType<typeof getLatestSyncMeta>>,
+  dateStart: string,
+  dateEnd: string,
+  hasMetricsRows: boolean,
+  shopId?: string
+): string[] {
+  const warnings: string[] = [];
+  const { dateStart: today } = todayDateRange();
+  const isToday = dateStart === today && dateEnd === today;
+  const now = Date.now();
+
+  if (!hasMetricsRows) {
+    warnings.push('所选日期范围内暂无已入库的 Facebook 指标，请确认后台已同步或更换日期');
+  }
+
+  if (isToday) {
+    if (!syncMeta.metricsSyncedAt) {
+      warnings.push('今日 Facebook 指标尚未同步');
+    } else if (now - new Date(syncMeta.metricsSyncedAt).getTime() > 20 * 60 * 1000) {
+      warnings.push('Facebook 指标已超过 20 分钟未更新');
+    }
+    if (shopId) {
+      if (!syncMeta.utmSyncedAt) {
+        warnings.push('今日 Shoplazza UTM 尚未同步');
+      } else if (now - new Date(syncMeta.utmSyncedAt).getTime() > 10 * 60 * 1000) {
+        warnings.push('Shoplazza UTM 已超过 10 分钟未更新');
+      }
+    }
+  } else {
+    warnings.push('历史日期数据来自库内按日入库记录，若缺数据需等待后台补同步');
+  }
+
+  if (syncMeta.refreshing) {
+    warnings.push('后台正在同步，数据可能稍后更新');
+  }
+
+  return warnings;
 }
 
 function rollupFromAds(
@@ -45,12 +101,13 @@ export class HierarchyService {
   ) {
     const cleanId = accountId.replace('act_', '');
 
-    const [campaigns, adsets, adsMeta, fbAds, utmRows, syncMeta] = await Promise.all([
+    const [campaigns, adsets, adsMeta, fbAds, utmRows, utmCampaignRows, syncMeta] = await Promise.all([
       getFbCampaigns(cleanId),
       getFbAdsets(cleanId),
       getFbAdsMeta(cleanId),
       getFbAdsByDateRange(cleanId, dateStart, dateEnd),
       getShoplazzaUtmForAccount(cleanId, dateStart, dateEnd, shopId),
+      getShoplazzaUtmCampaignRows(dateStart, dateEnd, shopId),
       getLatestSyncMeta(cleanId, dateStart, dateEnd, shopId || ''),
     ]);
 
@@ -66,6 +123,7 @@ export class HierarchyService {
     const ads = adsMeta.map((meta) => {
       const metrics = metricsByAd.get(meta.ad_id) || { spend: 0, cpm: 0, budget: 0 };
       const utmRow = utmByAdId.get(meta.ad_id);
+      const utmCampaignRow = findUtmCampaignForAd(meta, utmCampaignRows);
       return {
         id: meta.ad_id,
         name: meta.name || meta.ad_id,
@@ -82,10 +140,13 @@ export class HierarchyService {
         utmOrders: utmRow?.orders ?? 0,
         utmSales: Number(utmRow?.sales) || 0,
         utmMatched: !!utmRow,
+        utmCampaign: utmCampaignRow?.utm_value ?? null,
       };
     });
 
     const matchedCount = ads.filter((a) => a.utmMatched).length;
+    const adsWithSpend = ads.filter((a) => Number(a.spend) > 0);
+    const totalSpend = adsWithSpend.reduce((s, a) => s + Number(a.spend), 0);
 
     const adsByAdset = new Map<string, typeof ads>();
     const adsByCampaign = new Map<string, typeof ads>();
@@ -115,14 +176,35 @@ export class HierarchyService {
       };
     });
 
-    const adsetStatusById = new Map(adsetRows.map((a) => [a.id, a.status]));
+    // fb_adsets 不完整时，从广告元数据补全广告组（避免展开系列后下级为空）
+    const knownAdsetIds = new Set(adsetRows.map((a) => a.id));
+    const syntheticAdsets: typeof adsetRows = [];
+    for (const [adsetId, childAds] of adsByAdset) {
+      if (knownAdsetIds.has(adsetId)) continue;
+      const rollup = rollupFromAds(childAds);
+      syntheticAdsets.push({
+        id: adsetId,
+        name: childAds[0]?.name ? `${childAds[0].name}（组）` : `广告组 ${String(adsetId).slice(-8)}`,
+        campaignId: childAds.find((ad) => ad.campaignId)?.campaignId ?? null,
+        status: rollupDeliveryStatus(childAds.map((ad) => ad.status)),
+        daily_budget: null,
+        lifetime_budget: null,
+        spend: rollup.spend,
+        cpm: rollup.cpm,
+      });
+      knownAdsetIds.add(adsetId);
+    }
+
+    const allAdsetRows = [...adsetRows, ...syntheticAdsets];
+
+    const adsetStatusById = new Map(allAdsetRows.map((a) => [a.id, a.status]));
 
     const campaignRows = campaigns.map((c) => {
       const childAds = adsByCampaign.get(c.campaign_id) || [];
       const rollup = rollupFromAds(childAds);
-      const childAdsetStatuses = adsets
-        .filter((a) => a.campaign_id === c.campaign_id)
-        .map((a) => adsetStatusById.get(a.adset_id) || 'PAUSED');
+      const childAdsetStatuses = allAdsetRows
+        .filter((a) => a.campaignId === c.campaign_id)
+        .map((a) => adsetStatusById.get(a.id) || 'PAUSED');
       return {
         id: c.campaign_id,
         name: c.name || c.campaign_id,
@@ -137,11 +219,22 @@ export class HierarchyService {
 
     return {
       campaigns: campaignRows,
-      adsets: adsetRows,
+      adsets: allAdsetRows,
       ads,
       meta: {
         ...syncMeta,
+        dateStart,
+        dateEnd,
+        timezone: 'UTC+8',
+        syncWarnings: buildSyncWarnings(syncMeta, dateStart, dateEnd, fbAds.length > 0, shopId),
         matched: { total: ads.length, matched: matchedCount, unmatched: ads.length - matchedCount },
+        spendSummary: {
+          totalSpend: Math.round(totalSpend * 100) / 100,
+          adsWithSpend: adsWithSpend.length,
+          totalAds: ads.length,
+          campaignsWithSpend: campaignRows.filter((c) => Number(c.spend) > 0).length,
+          totalCampaigns: campaignRows.length,
+        },
         shopId: shopId || null,
       },
     };

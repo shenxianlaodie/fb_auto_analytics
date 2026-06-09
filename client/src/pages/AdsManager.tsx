@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
   Table, Button, Modal, Form, Input, Select, Space, Tag, Popconfirm,
-  Typography, message, Image,
+  Typography, message, Image, DatePicker, Alert,
 } from 'antd';
+import dayjs from 'dayjs';
 import {
   PlusOutlined, ReloadOutlined, EditOutlined, DeleteOutlined,
   RightOutlined, DownOutlined, SearchOutlined,
@@ -12,7 +13,12 @@ import api from '../services/api';
 import { useAccountStore } from '../store/accountStore';
 import { FBCampaign, FBAdSet, FBAd } from '../types/facebook';
 import { EmptyState } from '../components/Common/EmptyState';
-import { todayDateRange } from '../utils/todayRange';
+import { ColumnOrderSettings } from '../components/AdsManager/ColumnOrderSettings';
+import { useColumnOrderStore } from '../store/columnOrderStore';
+import { useUIStore } from '../store/uiStore';
+import { applyColumnOrder } from '../utils/columnOrder';
+
+const { RangePicker } = DatePicker;
 
 const { Title } = Typography;
 
@@ -61,6 +67,11 @@ function fmtCostPerCount(spend: number, count: number): string {
 function fmtRoas(sales: number, spend: number): string {
   if (!spend || spend <= 0) return '-';
   return (sales / spend).toFixed(2);
+}
+
+function fmtOrders(orders: number): string {
+  const n = Number(orders) || 0;
+  return n > 0 ? String(n) : '-';
 }
 
 function cmpStr(a: string, b: string): number {
@@ -167,6 +178,17 @@ interface SyncMeta {
   metricsSyncedAt: string | null;
   utmSyncedAt: string | null;
   refreshing: boolean;
+  dateStart?: string;
+  dateEnd?: string;
+  timezone?: string;
+  syncWarnings?: string[];
+  spendSummary?: {
+    totalSpend: number;
+    adsWithSpend: number;
+    totalAds: number;
+    campaignsWithSpend: number;
+    totalCampaigns: number;
+  };
 }
 
 const OBJECTIVES: Record<string, string> = {
@@ -180,17 +202,18 @@ const OBJECTIVES: Record<string, string> = {
 
 export const AdsManager: React.FC = () => {
   const { accountId, accountName } = useAccountStore();
+  const { dateRange, setDateRange } = useUIStore();
+  const campaignColumnOrder = useColumnOrderStore((s) => s.orders.campaign);
   const [campaigns, setCampaigns] = useState<any[]>([]);
   const [allAdSets, setAllAdSets] = useState<FBAdSet[]>([]);
   const [allAds, setAllAds] = useState<FBAd[]>([]);
   const [loading, setLoading] = useState(false);
   const [syncMeta, setSyncMeta] = useState<SyncMeta | null>(null);
   const loadedRef = useRef(false);
-  const dateRef = useRef(todayDateRange().dateStart);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const dateRef = useRef(`${dateRange[0]}~${dateRange[1]}`);
   const readPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Modal state
+  const getDateRange = () => ({ dateStart: dateRange[0], dateEnd: dateRange[1] });
   const [modalOpen, setModalOpen] = useState(false);
   const [modalType, setModalType] = useState<'campaign' | 'adset' | 'ad'>('campaign');
   const [parentId, setParentId] = useState<string | null>(null);
@@ -200,14 +223,15 @@ export const AdsManager: React.FC = () => {
   const [searchAdId, setSearchAdId] = useState('');
   const [searchName, setSearchName] = useState('');
 
-  const getDateRange = () => todayDateRange();
-
   const filtered = useMemo(
     () => filterHierarchy(campaigns, allAdSets, allAds, searchAdId, searchName),
     [campaigns, allAdSets, allAds, searchAdId, searchName],
   );
   const searchActive = !!(searchAdId.trim() || searchName.trim());
-  const displayCampaigns = filtered.campaigns;
+  const displayCampaigns = useMemo(
+    () => [...filtered.campaigns].sort((a, b) => (Number(b.spend) || 0) - (Number(a.spend) || 0)),
+    [filtered.campaigns],
+  );
   const displayAdsets = filtered.adsets;
   const displayAds = filtered.ads;
 
@@ -218,44 +242,15 @@ export const AdsManager: React.FC = () => {
     if (data.meta) setSyncMeta(data.meta);
   };
 
-  const loadHierarchy = useCallback(async (triggerRefresh = false) => {
+  const loadHierarchy = useCallback(async () => {
     if (!accountId) return;
     const { dateStart, dateEnd } = getDateRange();
-
-    if (triggerRefresh) {
-      api.post('/analytics/refresh', { accountId, accountName, dateStart, dateEnd }).catch((err) => {
-        console.warn('Background refresh failed:', err);
-      });
-    }
 
     const resp = await api.get('/analytics/hierarchy', {
       params: { accountId, accountName, dateStart, dateEnd },
     });
     applyHierarchy(resp.data);
-    return resp.data?.meta as SyncMeta | undefined;
-  }, [accountId, accountName]);
-
-  const startPolling = useCallback(() => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    let attempts = 0;
-    pollRef.current = setInterval(async () => {
-      attempts++;
-      try {
-        const meta = await loadHierarchy(false);
-        if (!meta?.refreshing || attempts >= 30) {
-          if (pollRef.current) {
-            clearInterval(pollRef.current);
-            pollRef.current = null;
-          }
-        }
-      } catch {
-        if (attempts >= 18 && pollRef.current) {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
-        }
-      }
-    }, 5000);
-  }, [loadHierarchy]);
+  }, [accountId, accountName, dateRange]);
 
   const fetchAll = useCallback(async () => {
     if (!accountId || loadedRef.current) return;
@@ -263,15 +258,14 @@ export const AdsManager: React.FC = () => {
     setLoading(true);
 
     try {
-      await loadHierarchy(true);
-      startPolling();
+      await loadHierarchy();
     } catch (err: any) {
       console.error('Hierarchy load failed:', err);
       message.warning(err.response?.data?.error || '加载数据失败');
     }
 
     setLoading(false);
-  }, [accountId, loadHierarchy, startPolling]);
+  }, [accountId, loadHierarchy]);
 
   useEffect(() => {
     if (!accountId) return;
@@ -280,27 +274,21 @@ export const AdsManager: React.FC = () => {
     setAllAds([]);
     setSyncMeta(null);
     loadedRef.current = false;
-    dateRef.current = getDateRange().dateStart;
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
+    dateRef.current = `${dateRange[0]}~${dateRange[1]}`;
     if (readPollRef.current) {
       clearInterval(readPollRef.current);
       readPollRef.current = null;
     }
     fetchAll();
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
       if (readPollRef.current) clearInterval(readPollRef.current);
     };
-  }, [accountId, fetchAll]);
+  }, [accountId, dateRange, fetchAll]);
 
-  // 每 60 秒读库刷新展示（0 次外部 API）
   useEffect(() => {
     if (!accountId) return;
     readPollRef.current = setInterval(() => {
-      loadHierarchy(false).catch(() => {});
+      loadHierarchy().catch(() => {});
     }, 60_000);
     return () => {
       if (readPollRef.current) {
@@ -308,26 +296,23 @@ export const AdsManager: React.FC = () => {
         readPollRef.current = null;
       }
     };
-  }, [accountId, loadHierarchy]);
+  }, [accountId, dateRange, loadHierarchy]);
 
-  // 跨日自动刷新（页面长时间打开时）
+  // 跨日/换日期时重新加载
   useEffect(() => {
-    const timer = setInterval(() => {
-      const today = getDateRange().dateStart;
-      if (today !== dateRef.current) {
-        dateRef.current = today;
-        loadedRef.current = false;
-        fetchAll();
-      }
-    }, 60_000);
-    return () => clearInterval(timer);
-  }, [fetchAll]);
+    const key = `${dateRange[0]}~${dateRange[1]}`;
+    if (key !== dateRef.current && accountId) {
+      dateRef.current = key;
+      loadedRef.current = false;
+      fetchAll();
+    }
+  }, [dateRange, accountId, fetchAll]);
 
-  // 切回标签页时刷新
+  // 切回标签页时读库（不触发外部同步）
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === 'visible' && accountId) {
-        loadHierarchy(true);
+        loadHierarchy().catch(() => {});
       }
     };
     document.addEventListener('visibilitychange', onVisible);
@@ -337,11 +322,10 @@ export const AdsManager: React.FC = () => {
   const refresh = async () => {
     setLoading(true);
     try {
-      await loadHierarchy(true);
-      startPolling();
-      message.success('已触发后台同步');
+      await loadHierarchy();
+      message.success('已从数据库重新加载');
     } catch (err: any) {
-      message.warning(err.response?.data?.error || '刷新失败');
+      message.warning(err.response?.data?.error || '加载失败');
     }
     setLoading(false);
   };
@@ -456,6 +440,18 @@ export const AdsManager: React.FC = () => {
       },
     },
     {
+      title: '成效', key: 'utmOrders', width: 70,
+      sorter: (a, b) => {
+        const ma = aggregateAdsMetrics(adsForCampaign(a.id, displayAds));
+        const mb = aggregateAdsMetrics(adsForCampaign(b.id, displayAds));
+        return cmpNum(ma.utmOrders, mb.utmOrders);
+      },
+      render: (_: any, r: any) => {
+        const m = aggregateAdsMetrics(adsForCampaign(r.id, displayAds));
+        return fmtOrders(m.utmOrders);
+      },
+    },
+    {
       title: '单次成效\n花费', key: 'purchases', width: 90,
       sorter: (a, b) => {
         const ma = aggregateAdsMetrics(adsForCampaign(a.id, displayAds));
@@ -471,8 +467,9 @@ export const AdsManager: React.FC = () => {
     },
     {
       title: '已花费\n金额', key: 'spend', width: 90,
+      defaultSortOrder: 'descend' as const,
       sorter: (a, b) => cmpNum(Number(a.spend) || 0, Number(b.spend) || 0),
-      render: (_: any, r: any) => (r.spend != null && !isNaN(r.spend)) ? `$${r.spend.toFixed(2)}` : '-',
+      render: (_: any, r: any) => (r.spend != null && !isNaN(r.spend)) ? `$${Number(r.spend).toFixed(2)}` : '-',
     },
     {
       title: 'CPM', key: 'cpm', width: 80,
@@ -553,6 +550,11 @@ export const AdsManager: React.FC = () => {
     },
   ];
 
+  const orderedCampaignColumns = useMemo(
+    () => applyColumnOrder(campaignColumns, campaignColumnOrder),
+    [campaignColumns, campaignColumnOrder],
+  );
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
@@ -561,19 +563,39 @@ export const AdsManager: React.FC = () => {
           {syncMeta?.refreshing && (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>同步中…</Typography.Text>
           )}
+          {syncMeta?.spendSummary && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              今日花费 ${syncMeta.spendSummary.totalSpend.toFixed(2)}
+              （{syncMeta.spendSummary.adsWithSpend}/{syncMeta.spendSummary.totalAds} 条广告有消耗
+              ，{syncMeta.spendSummary.campaignsWithSpend} 个系列）
+            </Typography.Text>
+          )}
           {syncMeta?.metricsSyncedAt && !syncMeta.refreshing && (
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              指标更新 {new Date(syncMeta.metricsSyncedAt).toLocaleTimeString()}
+              FB {new Date(syncMeta.metricsSyncedAt).toLocaleTimeString()}
+              {syncMeta.utmSyncedAt ? ` · UTM ${new Date(syncMeta.utmSyncedAt).toLocaleTimeString()}` : ''}
+              {syncMeta.structureSyncedAt ? ` · 结构 ${new Date(syncMeta.structureSyncedAt).toLocaleTimeString()}` : ''}
             </Typography.Text>
           )}
           <Button icon={<ReloadOutlined />} onClick={refresh} loading={loading}>刷新</Button>
+          <ColumnOrderSettings />
           <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreateModal('campaign')}>
             创建广告系列
           </Button>
         </Space>
       </div>
 
-      <div style={{ marginBottom: 16, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+      <div style={{ marginBottom: 16, display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <RangePicker
+          value={[dayjs(dateRange[0]), dayjs(dateRange[1])]}
+          onChange={(dates) => {
+            if (dates?.[0] && dates?.[1]) {
+              setDateRange([dates[0].format('YYYY-MM-DD'), dates[1].format('YYYY-MM-DD')]);
+            }
+          }}
+          allowClear={false}
+        />
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>时区 UTC+8</Typography.Text>
         <Input
           allowClear
           prefix={<SearchOutlined style={{ color: '#bbb' }} />}
@@ -597,8 +619,24 @@ export const AdsManager: React.FC = () => {
         )}
       </div>
 
+      {syncMeta?.syncWarnings && syncMeta.syncWarnings.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="数据同步提示"
+          description={
+            <ul style={{ margin: 0, paddingLeft: 18 }}>
+              {syncMeta.syncWarnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          }
+        />
+      )}
+
       <Table
-        columns={campaignColumns}
+        columns={orderedCampaignColumns}
         dataSource={displayCampaigns}
         rowKey="id"
         loading={loading}
@@ -703,6 +741,7 @@ function AdSetSubTable({
   onCreateAd: (adsetId: string) => void;
   onCreateAdSet: () => void;
 }) {
+  const adsetColumnOrder = useColumnOrderStore((s) => s.orders.adset);
   const adsetColumns: ColumnsType<any> = [
     {
       title: '广告组名称', dataIndex: 'name', key: 'name', width: 160, ellipsis: true, fixed: 'left' as const,
@@ -743,6 +782,18 @@ function AdSetSubTable({
       render: (_: any, r: any) => {
         const m = aggregateAdsMetrics(adsForAdset(r.id, allAds));
         return fmtCostPerUv(m.spend, m.utmUv);
+      },
+    },
+    {
+      title: '成效', key: 'utmOrders', width: 70,
+      sorter: (a, b) => {
+        const ma = aggregateAdsMetrics(adsForAdset(a.id, allAds));
+        const mb = aggregateAdsMetrics(adsForAdset(b.id, allAds));
+        return cmpNum(ma.utmOrders, mb.utmOrders);
+      },
+      render: (_: any, r: any) => {
+        const m = aggregateAdsMetrics(adsForAdset(r.id, allAds));
+        return fmtOrders(m.utmOrders);
       },
     },
     {
@@ -819,6 +870,11 @@ function AdSetSubTable({
     },
   ];
 
+  const orderedAdsetColumns = useMemo(
+    () => applyColumnOrder(adsetColumns, adsetColumnOrder),
+    [adsetColumns, adsetColumnOrder],
+  );
+
   return (
     <div style={{ margin: '0 0 8px 24px', padding: '8px 0', borderLeft: '3px solid #1677ff', paddingLeft: 12 }}>
       <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -826,7 +882,7 @@ function AdSetSubTable({
         <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={onCreateAdSet}>+添加广告组</Button>
       </div>
       <Table
-        columns={adsetColumns}
+        columns={orderedAdsetColumns}
         dataSource={adsets}
         rowKey="id"
         size="small"
@@ -870,6 +926,7 @@ function AdSubTable({
   onDelete: (type: string, id: string) => void;
   onCreate: () => void;
 }) {
+  const adColumnOrder = useColumnOrderStore((s) => s.orders.ad);
   const adColumns: ColumnsType<any> = [
     {
       title: '广告名称', dataIndex: 'name', key: 'name', width: 180, ellipsis: true, fixed: 'left' as const,
@@ -880,6 +937,10 @@ function AdSubTable({
       render: (c: any) => c?.thumbnail_url
         ? <Image src={c.thumbnail_url} width={40} height={40} style={{ objectFit: 'cover', borderRadius: 4 }} />
         : <Tag>无</Tag>,
+    },
+    {
+      title: '活动关键词', dataIndex: 'utmCampaign', key: 'utmCampaign', width: 140, ellipsis: true,
+      render: (v: string | null) => v || '-',
     },
     {
       title: '投放状态', dataIndex: 'status', key: 'status', width: 90,
@@ -904,6 +965,11 @@ function AdSubTable({
         return cmpNum(va, vb);
       },
       render: (_: any, r: any) => fmtCostPerUv(Number(r.spend) || 0, Number(r.utmUv) || 0),
+    },
+    {
+      title: '成效', dataIndex: 'utmOrders', key: 'utmOrders', width: 70,
+      sorter: (a, b) => cmpNum(Number(a.utmOrders) || 0, Number(b.utmOrders) || 0),
+      render: (_: any, r: any) => fmtOrders(Number(r.utmOrders) || 0),
     },
     {
       title: '单次成效\n花费', key: 'purchases', width: 90,
@@ -958,6 +1024,11 @@ function AdSubTable({
     },
   ];
 
+  const orderedAdColumns = useMemo(
+    () => applyColumnOrder(adColumns, adColumnOrder),
+    [adColumns, adColumnOrder],
+  );
+
   return (
     <div style={{ margin: '4px 0 8px 24px', padding: '8px 0', borderLeft: '3px solid #52c41a', paddingLeft: 12 }}>
       <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -965,12 +1036,15 @@ function AdSubTable({
         <Button size="small" type="dashed" icon={<PlusOutlined />} onClick={onCreate}>+添加广告</Button>
       </div>
       <Table
-        columns={adColumns}
+        columns={orderedAdColumns}
         dataSource={ads}
         rowKey="id"
         size="small"
         pagination={false}
-        scroll={{ x: 1100 }}
+        scroll={{ x: 1200 }}
+        rowClassName={(record) =>
+          record.utmMatched === false && Number(record.spend) > 0 ? 'utm-unmatched-row' : ''
+        }
         locale={{ emptyText: '暂无广告' }}
       />
     </div>

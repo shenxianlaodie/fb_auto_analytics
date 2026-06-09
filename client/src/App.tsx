@@ -11,6 +11,7 @@ import { AdsManager } from './pages/AdsManager';
 import { BatchPublish } from './pages/BatchPublish';
 import { ShopMapping } from './pages/ShopMapping';
 import { ShopTokens } from './pages/ShopTokens';
+import { CrossAccountSummary } from './pages/CrossAccountSummary';
 import { useAuthStore } from './store/authStore';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -36,6 +37,7 @@ function AppRoutes() {
       >
         <Route index element={<Dashboard />} />
         <Route path="ads" element={<AdsManager />} />
+        <Route path="cross-account" element={<CrossAccountSummary />} />
         <Route path="batch" element={<BatchPublish />} />
         <Route path="shop-mapping" element={<ShopMapping />} />
         <Route path="shop-tokens" element={<ShopTokens />} />
