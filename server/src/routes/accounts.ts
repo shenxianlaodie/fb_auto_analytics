@@ -21,7 +21,26 @@ function isCacheFresh(syncedAt: string | null | undefined): boolean {
   return Date.now() - new Date(syncedAt).getTime() < ACCOUNTS_CACHE_TTL_MS;
 }
 
-// GET /api/accounts — 完整同步后 6h 内读库；否则拉取 Facebook（支持分页）
+/** Filter accounts by user's allowed_accounts permission */
+function filterByPermission(
+  accounts: any[],
+  role: string,
+  allowedAccounts: string[]
+): any[] {
+  // Admin with no restriction → return all
+  if (role === 'admin' && (!allowedAccounts || allowedAccounts.length === 0)) {
+    return accounts;
+  }
+  // Filter by allowed list
+  const allowed = (allowedAccounts || []).map((a: string) => a.replace(/^act_/, ''));
+  if (allowed.length === 0) return [];
+  return accounts.filter((acc: any) => {
+    const accId = (acc.account_id || acc.id || '').replace(/^act_/, '');
+    return allowed.includes(accId);
+  });
+}
+
+// GET /api/accounts
 accountsRouter.get('/', async (req: AuthRequest, res: Response) => {
   const forceRefresh = req.query.refresh === 'true';
   const user = await getUserById(req.userId!);
@@ -29,7 +48,8 @@ accountsRouter.get('/', async (req: AuthRequest, res: Response) => {
   const cacheFresh = isCacheFresh(user?.accounts_synced_at);
 
   if (!forceRefresh && cached.length > 0 && cacheFresh) {
-    res.json({ data: cached, source: 'cache', total: cached.length });
+    const filtered = filterByPermission(cached, req.userRole!, req.userAllowedAccounts!);
+    res.json({ data: filtered, source: 'cache', total: filtered.length });
     return;
   }
 
@@ -39,17 +59,19 @@ accountsRouter.get('/', async (req: AuthRequest, res: Response) => {
     await upsertAccountsForUser(req.userId!, accounts);
     await touchAccountsSyncedAt(req.userId!);
     console.log(`[Accounts] User ${req.userId} synced ${accounts.length} ad accounts from Facebook`);
-    res.json({ data: accounts, source: 'facebook', total: accounts.length });
+    const filtered = filterByPermission(accounts, req.userRole!, req.userAllowedAccounts!);
+    res.json({ data: filtered, source: 'facebook', total: filtered.length });
   } catch (err: any) {
     console.error('[Accounts] Facebook fetch failed:', fbErrorMessage(err));
 
-    if (cached.length > 0) {
+    const filtered = filterByPermission(cached, req.userRole!, req.userAllowedAccounts!);
+    if (filtered.length > 0) {
       res.json({
-        data: cached,
+        data: filtered,
         source: 'cache',
         stale: true,
-        total: cached.length,
-        warning: `Facebook API 限流，仅显示已缓存的 ${cached.length} 个账户。请稍后点击刷新账户重试。`,
+        total: filtered.length,
+        warning: `Facebook API 限流，仅显示已缓存的 ${filtered.length} 个账户。请稍后点击刷新账户重试。`,
       });
       return;
     }

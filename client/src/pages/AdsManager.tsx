@@ -1,11 +1,11 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import {
-  Table, Button, Modal, Form, Input, Select, Space, Tag, Popconfirm,
+  Table, Button, Modal, Form, Input, Select, Switch, Space, Tag,
   Typography, message, Image, DatePicker, Alert,
 } from 'antd';
 import dayjs from 'dayjs';
 import {
-  PlusOutlined, ReloadOutlined, EditOutlined, DeleteOutlined,
+  PlusOutlined, ReloadOutlined, EditOutlined,
   RightOutlined, DownOutlined, SearchOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
@@ -394,16 +394,32 @@ export const AdsManager: React.FC = () => {
     }
   };
 
-  const handleDelete = async (type: string, id: string) => {
+  const handleToggleStatus = async (type: string, id: string, currentStatus: string) => {
+    const newStatus = currentStatus === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
     try {
       const endpoints: Record<string, string> = { campaign: `/campaigns/${id}`, adset: `/adsets/${id}`, ad: `/ads/${id}` };
-      await api.delete(endpoints[type]);
-      message.success('已删除');
+      await api.put(endpoints[type], { status: newStatus });
+      message.success(newStatus === 'ACTIVE' ? '已开启' : '已暂停');
       loadedRef.current = false;
       fetchAll();
-    } catch {
-      message.error('删除失败');
+    } catch (err: any) {
+      message.error(err?.response?.data?.error || '操作失败');
     }
+  };
+
+  const [editingBudget, setEditingBudget] = useState<{ id: string; type: string; current: number } | null>(null);
+
+  const handleUpdateBudget = async (type: string, id: string, budgetCents: number) => {
+    try {
+      const endpoints: Record<string, string> = { campaign: `/campaigns/${id}`, adset: `/adsets/${id}` };
+      await api.put(endpoints[type], { budget: { daily: budgetCents } });
+      message.success('预算已更新');
+      loadedRef.current = false;
+      fetchAll();
+    } catch (err: any) {
+      message.error(err?.response?.data?.error || '预算更新失败');
+    }
+    setEditingBudget(null);
   };
 
   const handleEdit = (type: 'campaign' | 'adset' | 'ad', record: any) => {
@@ -436,7 +452,36 @@ export const AdsManager: React.FC = () => {
       sorter: (a, b) => cmpNum(parseBudget(a), parseBudget(b)),
       render: (_: any, r: any) => {
         const budget = parseBudget(r);
-        return budget > 0 ? `$${budget.toFixed(0)}` : '-';
+        if (editingBudget?.id === r.id && editingBudget?.type === 'campaign') {
+          return (
+            <Input
+              autoFocus
+              size="small"
+              type="number"
+              defaultValue={budget}
+              style={{ width: 80 }}
+              onBlur={(e) => {
+                const v = parseInt(e.target.value, 10);
+                if (v > 0) handleUpdateBudget('campaign', r.id, v);
+                else setEditingBudget(null);
+              }}
+              onPressEnter={(e: any) => {
+                const v = parseInt(e.target.value, 10);
+                if (v > 0) handleUpdateBudget('campaign', r.id, v);
+                else setEditingBudget(null);
+              }}
+            />
+          );
+        }
+        return (
+          <span
+            style={{ cursor: 'pointer' }}
+            onDoubleClick={() => setEditingBudget({ id: r.id, type: 'campaign', current: budget })}
+            title="双击编辑预算"
+          >
+            {budget > 0 ? `$${budget.toFixed(0)}` : '-'}
+          </span>
+        );
       },
     },
     {
@@ -536,15 +581,18 @@ export const AdsManager: React.FC = () => {
       title: '广告编号', dataIndex: 'id', key: 'id', width: 160, ellipsis: true,
       sorter: (a, b) => cmpStr(a.id, b.id),
     },
-    { title: '操作', key: 'actions', width: 200, fixed: 'right' as const,
+    { title: '操作', key: 'actions', width: 220, fixed: 'right' as const,
       render: (_, record) => (
         <Space size="small">
           <Button size="small" type="link" onClick={() => openCreateModal('adset', record.id)}>+广告组</Button>
           <Button size="small" type="link" icon={<EditOutlined />}
             onClick={() => handleEdit('campaign', record)}>编辑</Button>
-          <Popconfirm title="确定删除？" onConfirm={() => handleDelete('campaign', record.id)}>
-            <Button size="small" type="link" danger icon={<DeleteOutlined />}>删除</Button>
-          </Popconfirm>
+          <Switch
+            size="small"
+            checked={record.status === 'ACTIVE'}
+            onChange={() => handleToggleStatus('campaign', record.id, record.status)}
+            checkedChildren="开" unCheckedChildren="关"
+          />
         </Space>
       ),
     },
@@ -658,7 +706,10 @@ export const AdsManager: React.FC = () => {
                 allAds={displayAds}
                 expandAll={searchActive}
                 onEdit={handleEdit}
-                onDelete={handleDelete}
+                onToggleStatus={handleToggleStatus}
+                editingBudget={editingBudget}
+                setEditingBudget={setEditingBudget}
+                handleUpdateBudget={handleUpdateBudget}
                 onCreateAd={(adsetId) => openCreateModal('ad', adsetId)}
                 onCreateAdSet={() => openCreateModal('adset', campaign.id)}
               />
@@ -729,7 +780,10 @@ function AdSetSubTable({
   allAds,
   expandAll,
   onEdit,
-  onDelete,
+  onToggleStatus,
+  editingBudget,
+  setEditingBudget,
+  handleUpdateBudget,
   onCreateAd,
   onCreateAdSet,
 }: {
@@ -737,7 +791,10 @@ function AdSetSubTable({
   allAds: any[];
   expandAll?: boolean;
   onEdit: (type: 'adset' | 'ad', record: any) => void;
-  onDelete: (type: string, id: string) => void;
+  onToggleStatus: (type: string, id: string, currentStatus: string) => void;
+  editingBudget: { id: string; type: string; current: number } | null;
+  setEditingBudget: (v: { id: string; type: string; current: number } | null) => void;
+  handleUpdateBudget: (type: string, id: string, budgetCents: number) => void;
   onCreateAd: (adsetId: string) => void;
   onCreateAdSet: () => void;
 }) {
@@ -757,7 +814,31 @@ function AdSetSubTable({
       sorter: (a, b) => cmpNum(parseBudget(a), parseBudget(b)),
       render: (_: any, r: any) => {
         const b = parseBudget(r);
-        return b > 0 ? `$${b.toFixed(0)}` : '-';
+        if (editingBudget?.id === r.id && editingBudget?.type === 'adset') {
+          return (
+            <Input
+              autoFocus size="small" type="number" defaultValue={b}
+              style={{ width: 80 }}
+              onBlur={(e) => {
+                const v = parseInt(e.target.value, 10);
+                if (v > 0) handleUpdateBudget('adset', r.id, v);
+                else setEditingBudget(null);
+              }}
+              onPressEnter={(e: any) => {
+                const v = parseInt(e.target.value, 10);
+                if (v > 0) handleUpdateBudget('adset', r.id, v);
+                else setEditingBudget(null);
+              }}
+            />
+          );
+        }
+        return (
+          <span style={{ cursor: 'pointer' }}
+            onDoubleClick={() => setEditingBudget({ id: r.id, type: 'adset', current: b })}
+            title="双击编辑预算">
+            {b > 0 ? `$${b.toFixed(0)}` : '-'}
+          </span>
+        );
       },
     },
     {
@@ -856,15 +937,18 @@ function AdSetSubTable({
       title: '广告组编号', dataIndex: 'id', key: 'id', width: 160, ellipsis: true,
       sorter: (a, b) => cmpStr(a.id, b.id),
     },
-    { title: '操作', key: 'actions', width: 200, fixed: 'right' as const,
+    { title: '操作', key: 'actions', width: 220, fixed: 'right' as const,
       render: (_, record) => (
         <Space size="small">
           <Button size="small" type="link" onClick={() => onCreateAd(record.id)}>+广告</Button>
           <Button size="small" type="link" icon={<EditOutlined />}
             onClick={() => onEdit('adset', record)}>编辑</Button>
-          <Popconfirm title="确定删除？" onConfirm={() => onDelete('adset', record.id)}>
-            <Button size="small" type="link" danger icon={<DeleteOutlined />}>删除</Button>
-          </Popconfirm>
+          <Switch
+            size="small"
+            checked={record.status === 'ACTIVE'}
+            onChange={() => onToggleStatus('adset', record.id, record.status)}
+            checkedChildren="开" unCheckedChildren="关"
+          />
         </Space>
       ),
     },
@@ -902,7 +986,7 @@ function AdSetSubTable({
               <AdSubTable
                 ads={adsetAds}
                 onEdit={onEdit}
-                onDelete={onDelete}
+                onToggleStatus={onToggleStatus}
                 onCreate={() => onCreateAd(adset.id)}
               />
             );
@@ -918,12 +1002,12 @@ function AdSetSubTable({
 function AdSubTable({
   ads,
   onEdit,
-  onDelete,
+  onToggleStatus,
   onCreate,
 }: {
   ads: any[];
   onEdit: (type: 'ad', record: any) => void;
-  onDelete: (type: string, id: string) => void;
+  onToggleStatus: (type: string, id: string, currentStatus: string) => void;
   onCreate: () => void;
 }) {
   const adColumnOrder = useColumnOrderStore((s) => s.orders.ad);
@@ -1011,14 +1095,17 @@ function AdSubTable({
       title: '广告编号', dataIndex: 'id', key: 'id', width: 160, ellipsis: true,
       sorter: (a, b) => cmpStr(a.id, b.id),
     },
-    { title: '操作', key: 'actions', width: 140, fixed: 'right' as const,
+    { title: '操作', key: 'actions', width: 180, fixed: 'right' as const,
       render: (_, record) => (
         <Space size="small">
           <Button size="small" type="link" icon={<EditOutlined />}
             onClick={() => onEdit('ad', record)}>编辑</Button>
-          <Popconfirm title="确定删除？" onConfirm={() => onDelete('ad', record.id)}>
-            <Button size="small" type="link" danger icon={<DeleteOutlined />}>删除</Button>
-          </Popconfirm>
+          <Switch
+            size="small"
+            checked={record.status === 'ACTIVE'}
+            onChange={() => onToggleStatus('ad', record.id, record.status)}
+            checkedChildren="开" unCheckedChildren="关"
+          />
         </Space>
       ),
     },

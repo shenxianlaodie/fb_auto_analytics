@@ -16,7 +16,7 @@ export const AuthCallback: React.FC = () => {
     if (token) {
       setAuth(token, '');
       sessionStorage.setItem('accounts_refresh', '1');
-      navigate('/', { replace: true });
+      navigate('/connect-facebook', { replace: true });
     }
 
     if (error) {

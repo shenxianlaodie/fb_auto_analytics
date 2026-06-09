@@ -12,6 +12,9 @@ import { BatchPublish } from './pages/BatchPublish';
 import { ShopMapping } from './pages/ShopMapping';
 import { ShopTokens } from './pages/ShopTokens';
 import { CrossAccountSummary } from './pages/CrossAccountSummary';
+import { TokenPool } from './pages/TokenPool';
+import { ConnectFacebook } from './pages/ConnectFacebook';
+import { UserManagement } from './pages/UserManagement';
 import { useAuthStore } from './store/authStore';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
@@ -27,6 +30,7 @@ function AppRoutes() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
+      <Route path="/connect-facebook" element={<ConnectFacebook />} />
       <Route
         path="/"
         element={
@@ -41,6 +45,8 @@ function AppRoutes() {
         <Route path="batch" element={<BatchPublish />} />
         <Route path="shop-mapping" element={<ShopMapping />} />
         <Route path="shop-tokens" element={<ShopTokens />} />
+        <Route path="token-pool" element={<TokenPool />} />
+        <Route path="users" element={<UserManagement />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

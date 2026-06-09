@@ -39,4 +39,12 @@ export const config = {
     apiVersion: process.env.SHOPLAZZA_API_VERSION || '2025-06',
     timeZone: parseInt(process.env.SHOPLAZZA_TIME_ZONE || '8', 10),
   },
+  dingtalk: {
+    appKey: process.env.DINGTALK_APP_KEY || '',
+    appSecret: process.env.DINGTALK_APP_SECRET || '',
+    redirectUri: process.env.DINGTALK_REDIRECT_URI || '',
+  },
+  system: {
+    fbAccessToken: process.env.SYSTEM_FB_ACCESS_TOKEN || '',
+  },
 };

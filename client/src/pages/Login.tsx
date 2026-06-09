@@ -1,23 +1,21 @@
 import React, { useEffect } from 'react';
 import { Button, Card, Typography, Space, Flex, Alert } from 'antd';
-import { FacebookOutlined, ThunderboltOutlined, BarChartOutlined, RocketOutlined } from '@ant-design/icons';
+import { DingtalkOutlined, ThunderboltOutlined, BarChartOutlined, RocketOutlined } from '@ant-design/icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useFacebookAuth } from '../hooks/useFacebookAuth';
+import { useDingTalkAuth } from '../hooks/useDingTalkAuth';
 
 const { Title, Text, Paragraph } = Typography;
 
 export const Login: React.FC = () => {
-  const { loading, error, isAuthenticated, login, handleCallback } = useFacebookAuth();
+  const { loading, error, isAuthenticated, login, handleCallback } = useDingTalkAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
   useEffect(() => {
-    // Handle OAuth callback: ?token=xxx
     const token = searchParams.get('token');
     if (token) {
       handleCallback(token);
     }
-    // Redirect if already authenticated
     if (isAuthenticated) {
       navigate('/', { replace: true });
     }
@@ -70,18 +68,18 @@ export const Login: React.FC = () => {
           <Button
             type="primary"
             size="large"
-            icon={<FacebookOutlined />}
+            icon={<DingtalkOutlined />}
             onClick={login}
             loading={loading}
             block
             style={{ height: 48, fontSize: 16 }}
           >
-            使用 Facebook 账号登录
+            使用钉钉账号登录
           </Button>
 
           <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 0 }}>
-            登录即表示您授权本平台访问您的 Facebook 广告账户数据。
-            我们承诺不会将您的数据用于任何非授权用途。
+            登录即表示您授权使用钉钉账号进行身份认证。
+            系统将通过管理员的 Facebook 广告账户获取数据。
           </Paragraph>
         </Space>
       </Card>

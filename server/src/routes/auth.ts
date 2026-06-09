@@ -1,80 +1,116 @@
 import { Router, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
+import axios from 'axios';
 import { config } from '../config';
-import { upsertUser, touchAccountsSyncedAt } from '../models/user';
-import { upsertAccountsForUser } from '../models/adAccount';
-import { FacebookClient } from '../services/facebookClient';
+import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { upsertDingTalkUser, getUserById } from '../models/user';
 
 export const authRouter = Router();
 
-// GET /api/auth/login — Redirect to Facebook OAuth
+// GET /api/auth/login — 返回钉钉授权 URL
 authRouter.get('/login', (_req: Request, res: Response) => {
-  const fbLoginUrl =
-    `https://www.facebook.com/${config.facebook.apiVersion}/dialog/oauth?` +
-    `client_id=${config.facebook.appId}` +
-    `&redirect_uri=${encodeURIComponent(config.facebook.redirectUri)}` +
-    `&scope=${encodeURIComponent('ads_read,ads_management,business_management,public_profile')}` +
-    `&state=${Math.random().toString(36).substring(2)}`;
+  const state = Math.random().toString(36).substring(2);
+  const dingtalkLoginUrl =
+    `https://login.dingtalk.com/oauth2/auth?` +
+    `redirect_uri=${encodeURIComponent(config.dingtalk.redirectUri)}` +
+    `&response_type=code` +
+    `&client_id=${config.dingtalk.appKey}` +
+    `&scope=openid` +
+    `&state=${state}` +
+    `&prompt=consent`;
 
-  res.json({ redirectUrl: fbLoginUrl });
+  res.json({ redirectUrl: dingtalkLoginUrl });
 });
 
-// GET /api/auth/callback — Handle OAuth callback
-authRouter.get('/callback', async (req: Request, res: Response) => {
+// GET /api/auth/dingtalk-callback — 钉钉 OAuth 回调
+authRouter.get('/dingtalk-callback', async (req: Request, res: Response) => {
   try {
+    console.log('[DingTalk] Callback received, query:', JSON.stringify(req.query));
+
     const { code } = req.query;
 
     if (!code || typeof code !== 'string') {
-      res.status(400).json({ error: '缺少授权码' });
+      console.error('[DingTalk] No code in callback');
+      res.redirect(`/login?error=${encodeURIComponent('缺少授权码')}`);
       return;
     }
 
-    // Exchange code for access token
-    const fbClient = FacebookClient.getInstance();
-    const tokenData = await fbClient.exchangeCodeForToken(code);
+    // Step 1: Exchange auth code for access token
+    console.log('[DingTalk] Step 1: exchanging code for token...');
+    const tokenResp = await axios.post(
+      'https://api.dingtalk.com/v1.0/oauth2/userAccessToken',
+      {
+        clientId: config.dingtalk.appKey,
+        clientSecret: config.dingtalk.appSecret,
+        code,
+        grantType: 'authorization_code',
+      },
+      { headers: { 'Content-Type': 'application/json' } }
+    );
 
-    // Get user profile
-    const profile = await fbClient.getUserProfile(tokenData.access_token);
+    console.log('[DingTalk] Step 1 response:', JSON.stringify(tokenResp.data));
+    const { accessToken } = tokenResp.data;
+    let unionId = tokenResp.data.unionId || '';
 
-    // Upsert user in DB
-    const user = await upsertUser({
-      facebookUserId: profile.id,
-      name: profile.name,
-      email: profile.email,
-      accessToken: tokenData.access_token,
-      tokenExpiresAt: tokenData.expires_at
-        ? new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
-        : undefined,
+    // Step 2: Get user info
+    let nick = '';
+    let avatarUrl = '';
+    let email = '';
+
+    try {
+      const userResp = await axios.get(
+        'https://api.dingtalk.com/v1.0/contact/users/me',
+        { headers: { 'x-acs-dingtalk-access-token': accessToken } }
+      );
+      console.log('[DingTalk] Step 2 user info:', JSON.stringify(userResp.data));
+      nick = userResp.data.nick || '';
+      avatarUrl = userResp.data.avatarUrl || '';
+      email = userResp.data.email || '';
+      // unionId may come from user info if not in token response
+      if (!unionId) {
+        unionId = userResp.data.unionId || userResp.data.openId || '';
+      }
+      console.log('[DingTalk] Got unionId:', unionId, 'nick:', nick);
+    } catch (err: any) {
+      console.warn('[DingTalk] Failed to fetch user profile:', err.response?.data || err.message);
+    }
+
+    if (!unionId) {
+      console.error('[DingTalk] No unionId from either token or user info!');
+      res.redirect(`/login?error=${encodeURIComponent('获取用户标识失败')}`);
+      return;
+    }
+
+    // Step 3: Upsert user in DB
+    console.log('[DingTalk] Step 3: upserting user...');
+    const user = await upsertDingTalkUser({
+      dingtalkUserId: unionId,
+      name: nick,
+      email,
+      avatar: avatarUrl,
     });
+    console.log('[DingTalk] Step 3: user upserted, id:', user.id);
 
-    // Generate JWT
+    // Step 4: Issue JWT
     const jwtToken = jwt.sign({ userId: user.id }, config.jwt.secret, {
       expiresIn: '7d' as any,
     });
+    console.log('[DingTalk] Step 4: JWT issued');
 
-    // 登录后后台同步完整账户列表（不阻塞跳转）
-    void (async () => {
-      try {
-        const accounts = await fbClient.getAdAccounts(tokenData.access_token);
-        await upsertAccountsForUser(user.id, accounts);
-        await touchAccountsSyncedAt(user.id);
-        console.log(`[Auth] Synced ${accounts.length} ad accounts for user ${user.id}`);
-      } catch (err: any) {
-        console.warn('[Auth] Background account sync failed:', err.message);
-      }
-    })();
-
-    // Redirect to frontend with token
-    const clientUrl = `https://localhost:${config.server.clientPort}/auth/callback?token=${jwtToken}`;
+    // Step 5: Redirect to frontend callback
+    const frontendBase = `https://${req.get('host') || `localhost:${config.server.port}`}`;
+    const clientUrl = `${frontendBase}/auth/callback?token=${jwtToken}`;
+    console.log('[DingTalk] Step 5: redirecting to:', clientUrl);
     res.redirect(clientUrl);
   } catch (err: any) {
-    console.error('[Auth] OAuth callback error:', err);
-    const clientUrl = `https://localhost:${config.server.clientPort}/login?error=${encodeURIComponent(err.message || '登录失败')}`;
+    console.error('[DingTalk] OAuth callback error:', JSON.stringify(err.response?.data || err.message || err));
+    const frontendBase = `https://${req.get('host') || `localhost:${config.server.port}`}`;
+    const clientUrl = `${frontendBase}/login?error=${encodeURIComponent(err.response?.data?.message || err.message || '钉钉登录失败')}`;
     res.redirect(clientUrl);
   }
 });
 
-// GET /api/auth/status — Check login status
+// GET /api/auth/status — 检查登录状态
 authRouter.get('/status', async (req: Request, res: Response) => {
   try {
     const authHeader = req.headers.authorization;
@@ -90,21 +126,19 @@ authRouter.get('/status', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/auth/refresh — Refresh Facebook token
-authRouter.post('/refresh', async (req: Request, res: Response) => {
-  try {
-    const { token: userToken } = req.body;
-
-    if (!userToken) {
-      res.status(400).json({ error: '缺少 token' });
-      return;
-    }
-
-    const fbClient = FacebookClient.getInstance();
-    const newToken = await fbClient.refreshLongLivedToken(userToken);
-
-    res.json({ accessToken: newToken.access_token, expiresIn: newToken.expires_in });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Token 刷新失败' });
+// GET /api/auth/me — 返回当前用户信息（角色、权限）
+authRouter.get('/me', authMiddleware, async (req: AuthRequest, res: Response) => {
+  const user = await getUserById(req.userId!);
+  if (!user) {
+    res.status(404).json({ error: '用户不存在' });
+    return;
   }
+  res.json({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    avatar: user.avatar,
+    role: user.role || 'viewer',
+    allowedAccounts: user.allowed_accounts || [],
+  });
 });

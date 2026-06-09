@@ -5,10 +5,10 @@ import { useAuthStore } from '../store/authStore';
 import { useAccountStore } from '../store/accountStore';
 import { FBAdAccount } from '../types/facebook';
 
-export function useFacebookAuth() {
+export function useDingTalkAuth() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { isAuthenticated, setAuth, logout } = useAuthStore();
+  const { isAuthenticated, setAuth, setUserInfo, logout } = useAuthStore();
   const { setAccounts, setAccount } = useAccountStore();
   const navigate = useNavigate();
 
@@ -20,13 +20,23 @@ export function useFacebookAuth() {
     try {
       const resp = await api.get('/auth/status');
       if (resp.data.authenticated) {
-        // Token still valid, fetch accounts
+        await fetchCurrentUser();
         await fetchAccounts();
       } else {
         setLoading(false);
       }
     } catch {
       setLoading(false);
+    }
+  }
+
+  async function fetchCurrentUser() {
+    try {
+      const resp = await api.get('/auth/me');
+      const { role, allowedAccounts } = resp.data;
+      setUserInfo(role || 'viewer', allowedAccounts || []);
+    } catch (err: any) {
+      console.error('Failed to fetch user info:', err);
     }
   }
 
@@ -49,7 +59,6 @@ export function useFacebookAuth() {
       setLoading(true);
       setError(null);
       const resp = await api.get('/auth/login');
-      // Redirect to Facebook OAuth
       window.location.href = resp.data.redirectUrl;
     } catch (err: any) {
       setError(err.response?.data?.error || '登录失败');
@@ -58,7 +67,6 @@ export function useFacebookAuth() {
   }
 
   function handleCallback(token: string) {
-    // Token comes from URL callback — just store token and redirect
     setAuth(token, '');
     setLoading(false);
     navigate('/', { replace: true });

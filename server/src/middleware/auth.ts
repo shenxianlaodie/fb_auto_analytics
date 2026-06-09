@@ -2,9 +2,12 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { getUserById } from '../models/user';
+import { getPoolToken } from '../services/tokenPool';
 
 export interface AuthRequest extends Request {
   userId?: string;
+  userRole?: 'admin' | 'viewer';
+  userAllowedAccounts?: string[];
   accessToken?: string;
 }
 
@@ -12,7 +15,7 @@ export async function authMiddleware(req: AuthRequest, res: Response, next: Next
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.status(401).json({ error: '未登录，请先授权 Facebook 账号' });
+    res.status(401).json({ error: '未登录，请先通过钉钉登录' });
     return;
   }
 
@@ -28,7 +31,10 @@ export async function authMiddleware(req: AuthRequest, res: Response, next: Next
     }
 
     req.userId = user.id;
-    req.accessToken = user.access_token;
+    req.userRole = (user.role || 'viewer') as 'admin' | 'viewer';
+    req.userAllowedAccounts = user.allowed_accounts || [];
+    // 从 Token 池中获取 Facebook Token，自动轮换
+    req.accessToken = await getPoolToken();
     next();
   } catch (err) {
     res.status(401).json({ error: '登录已过期，请重新登录' });

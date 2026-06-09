@@ -3,16 +3,10 @@ import cors from 'cors';
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
-import cron from 'node-cron';
 import { config } from './config';
 import { initDatabase } from './models/database';
 import { rateLimitMiddleware } from './middleware/rateLimit';
 import { errorHandler } from './middleware/errorHandler';
-import {
-  runMetricsCron,
-  runShoplazzaCron,
-  runStructureCron,
-} from './services/syncSchedulerService';
 
 // Import routes
 import { authRouter } from './routes/auth';
@@ -24,18 +18,21 @@ import { insightsRouter } from './routes/insights';
 import { batchRouter } from './routes/batch';
 import { uploadRouter } from './routes/upload';
 import { analyticsRouter } from './routes/analytics';
+import { usersRouter } from './routes/users';
+import { tokensRouter, handleConnectCallback } from './routes/tokens';
 
 const app = express();
 
 // Middleware
 app.use(cors({
-  origin: `https://localhost:${config.server.clientPort}`,
+  origin: true,
   credentials: true,
 }));
 app.use(express.json());
 app.use(rateLimitMiddleware);
 
 // Routes
+app.get('/api/tokens/connect-callback', handleConnectCallback);
 app.use('/api/auth', authRouter);
 app.use('/api/accounts', accountsRouter);
 app.use('/api/campaigns', campaignsRouter);
@@ -45,11 +42,25 @@ app.use('/api/insights', insightsRouter);
 app.use('/api/batch', batchRouter);
 app.use('/api/upload', uploadRouter);
 app.use('/api/analytics', analyticsRouter);
+app.use('/api/users', usersRouter);
+app.use('/api/tokens', tokensRouter);
 
 // Health check
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Production: serve client static files
+const clientDistPath = path.resolve(__dirname, '../../client/dist');
+if (fs.existsSync(clientDistPath)) {
+  app.use(express.static(clientDistPath));
+  // SPA fallback: non-API requests return index.html
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    res.sendFile(path.join(clientDistPath, 'index.html'));
+  });
+  console.log('[Server] Serving static files from', clientDistPath);
+}
 
 // Error handler (must be last)
 app.use(errorHandler);
@@ -60,43 +71,13 @@ async function start() {
     await initDatabase();
 
     const sslOptions = {
-      key: fs.readFileSync(path.resolve(__dirname, '../key.pem')),
-      cert: fs.readFileSync(path.resolve(__dirname, '../cert.pem')),
+      key: fs.readFileSync('/etc/letsencrypt/live/fb-auto-analytics.thinkpro.top/privkey.pem'),
+      cert: fs.readFileSync('/etc/letsencrypt/live/fb-auto-analytics.thinkpro.top/fullchain.pem'),
     };
 
     https.createServer(sslOptions, app).listen(config.server.port, () => {
       console.log(`[Server] FB Auto Analytics running on https://localhost:${config.server.port}`);
-      console.log(`[Server] Client: https://localhost:${config.server.clientPort}`);
     });
-
-    // Shoplazza UTM：每 5 分钟
-    cron.schedule('*/5 * * * *', async () => {
-      try {
-        await runShoplazzaCron();
-      } catch (err: any) {
-        console.error('[Cron] Shoplazza sync failed:', err.message);
-      }
-    });
-
-    // FB 指标：每 15 分钟（1 次 insights/ad）
-    cron.schedule('*/15 * * * *', async () => {
-      try {
-        await runMetricsCron();
-      } catch (err: any) {
-        console.error('[Cron] Metrics sync failed:', err.message);
-      }
-    });
-
-    // FB 结构：每 6 小时
-    cron.schedule('15 */6 * * *', async () => {
-      try {
-        await runStructureCron();
-      } catch (err: any) {
-        console.error('[Cron] Structure sync failed:', err.message);
-      }
-    });
-
-    console.log('[Cron] UTM 5min (hot 2min) / Metrics 15min (hot 2min) / Structure 6h');
   } catch (err) {
     console.error('[Server] Failed to start:', err);
     process.exit(1);
