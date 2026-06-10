@@ -3,12 +3,30 @@ import {
   upsertFbCampaign,
   upsertFbAdset,
   upsertFbAdMeta,
-  updateFbCampaignStatus,
-  updateFbAdsetStatus,
-  updateFbAdMetaStatus,
 } from '../models/fbStructure';
 import { touchSyncState } from '../models/syncState';
 import { extractPostIdFromStory, resolveStoryId } from '../utils/postId';
+import { sleep } from '../utils/sleep';
+import { recordStructureResult } from './accountDormantService';
+import { refreshAccountTierCache } from './accountTierService';
+
+const SERIAL_GAP_MS = 1000;
+const PAGE_GAP_MS = 300;
+
+/** 增量同步时回看重叠窗口，容忍时钟偏差/边界遗漏 */
+const INCREMENTAL_OVERLAP_MS = 5 * 60 * 1000;
+
+export interface StructureSyncOptions {
+  /** 上次结构同步时间；提供时做增量拉取（updated_time 过滤） */
+  sinceMs?: number;
+}
+
+function updatedTimeFilter(objectPrefix: string, sinceMs: number): string {
+  const sinceUnix = Math.floor((sinceMs - INCREMENTAL_OVERLAP_MS) / 1000);
+  return JSON.stringify([
+    { field: `${objectPrefix}.updated_time`, operator: 'GREATER_THAN', value: sinceUnix },
+  ]);
+}
 
 export class StructureSyncService {
   private fbClient: FacebookClient;
@@ -22,15 +40,33 @@ export class StructureSyncService {
   async syncStructure(
     accountId: string,
     dateStart: string,
-    dateEnd: string
+    dateEnd: string,
+    options: StructureSyncOptions = {}
   ): Promise<{ campaigns: number; adsets: number; ads: number }> {
     const cleanId = accountId.replace('act_', '');
+    const incremental = typeof options.sinceMs === 'number' && options.sinceMs > 0;
 
-    const [campaigns, adsets, ads] = await Promise.all([
-      this.fbClient.getAllCampaigns(cleanId, this.accessToken),
-      this.fbClient.getAllAdSets(cleanId, this.accessToken),
-      this.fbClient.getAllAds(cleanId, this.accessToken),
-    ]);
+    const campaignParams = incremental
+      ? { filtering: updatedTimeFilter('campaign', options.sinceMs!) }
+      : undefined;
+    const adsetParams = incremental
+      ? { filtering: updatedTimeFilter('adset', options.sinceMs!) }
+      : undefined;
+    const adParams = incremental
+      ? { filtering: updatedTimeFilter('ad', options.sinceMs!) }
+      : undefined;
+
+    const campaigns = await this.fbClient.getAllCampaigns(
+      cleanId, this.accessToken, 200, 50, PAGE_GAP_MS, campaignParams
+    );
+    await sleep(SERIAL_GAP_MS);
+    const adsets = await this.fbClient.getAllAdSets(
+      cleanId, this.accessToken, 200, 50, PAGE_GAP_MS, adsetParams
+    );
+    await sleep(SERIAL_GAP_MS);
+    const ads = await this.fbClient.getAllAds(
+      cleanId, this.accessToken, {}, 100, 20, PAGE_GAP_MS, adParams
+    );
 
     for (const c of campaigns) {
       await upsertFbCampaign({
@@ -44,7 +80,6 @@ export class StructureSyncService {
       });
     }
 
-    const budgetByAdset = new Map<string, number>();
     for (const a of adsets) {
       await upsertFbAdset({
         adAccountId: cleanId,
@@ -55,7 +90,6 @@ export class StructureSyncService {
         dailyBudget: a.daily_budget || null,
         lifetimeBudget: a.lifetime_budget || null,
       });
-      budgetByAdset.set(a.id, parseFloat(a.daily_budget || a.lifetime_budget || '0') / 100);
     }
 
     for (const ad of ads) {
@@ -75,28 +109,14 @@ export class StructureSyncService {
     }
 
     await touchSyncState(cleanId, 'structure', dateStart, dateEnd);
-    console.log(`[StructureSync] account=${cleanId} campaigns=${campaigns.length} adsets=${adsets.length} ads=${ads.length}`);
-    return { campaigns: campaigns.length, adsets: adsets.length, ads: ads.length };
-  }
-
-  /** 随 metrics 同步：仅刷新投放状态（3 次轻量 FB 请求） */
-  async syncDeliveryStatus(accountId: string): Promise<{ campaigns: number; adsets: number; ads: number }> {
-    const cleanId = accountId.replace('act_', '');
-
-    const [campaigns, adsets, ads] = await Promise.all([
-      this.fbClient.getAllCampaignStatuses(cleanId, this.accessToken),
-      this.fbClient.getAllAdSetStatuses(cleanId, this.accessToken),
-      this.fbClient.getAllAdStatuses(cleanId, this.accessToken),
-    ]);
-
-    await Promise.all([
-      ...campaigns.map((c) => updateFbCampaignStatus(cleanId, c.id, c.status || null)),
-      ...adsets.map((a) => updateFbAdsetStatus(cleanId, a.id, a.status || null)),
-      ...ads.map((a) => updateFbAdMetaStatus(cleanId, a.id, a.status || null)),
-    ]);
-
+    if (!incremental) {
+      // 增量返回 0 不代表账户空，dormant 判定只看全量结果
+      await recordStructureResult(cleanId, campaigns.length, adsets.length, ads.length);
+      await refreshAccountTierCache(cleanId);
+    }
     console.log(
-      `[StatusSync] account=${cleanId} campaigns=${campaigns.length} adsets=${adsets.length} ads=${ads.length}`
+      `[StructureSync] account=${cleanId} mode=${incremental ? 'incremental' : 'full'} ` +
+      `campaigns=${campaigns.length} adsets=${adsets.length} ads=${ads.length}`
     );
     return { campaigns: campaigns.length, adsets: adsets.length, ads: ads.length };
   }

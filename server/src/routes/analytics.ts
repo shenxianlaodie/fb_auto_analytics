@@ -1,5 +1,6 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
+import { requireAdmin } from '../middleware/permission';
 import { AdSyncService } from '../services/adSyncService';
 import { ShopTokenService } from '../services/shopTokenService';
 import { UtmMatchService } from '../services/utmMatchService';
@@ -39,7 +40,42 @@ async function resolveShopId(input: {
   }
 }
 
-// GET /api/analytics/hierarchy — DB-First，0 次 FB 调用
+/** 浏览即热：标记活跃 + 触发 TTL 门控的后台同步（FB 指标/结构 + UTM），不阻塞响应 */
+function enqueueHotRefresh(input: {
+  accountId: string;
+  accountName?: string;
+  dateStart: string;
+  dateEnd: string;
+  shopId?: string;
+  shopDomain?: string;
+}): void {
+  try {
+    touchActiveSync(input.accountId, input.shopId);
+    void enqueueRefresh({
+      accountId: input.accountId,
+      accountName: input.accountName,
+      dateStart: input.dateStart,
+      dateEnd: input.dateEnd,
+      shopId: input.shopId,
+      shopDomain: input.shopDomain,
+    });
+    if (input.shopId) {
+      void shopTokenService
+        .resolveShop({
+          accountId: input.accountId,
+          accountName: input.accountName,
+          shopId: input.shopId,
+          shopDomain: input.shopDomain,
+        })
+        .then((shop) => enqueueShopUtmSync(shop, input.dateStart, input.dateEnd))
+        .catch(() => {});
+    }
+  } catch {
+    // 热同步失败不影响读库响应
+  }
+}
+
+// GET /api/analytics/hierarchy — DB-First 立即返回；同时标记账户活跃并触发 TTL 门控的后台热同步
 analyticsRouter.get('/hierarchy', async (req: AuthRequest, res: Response) => {
   try {
     const { accountId, accountName, dateStart, dateEnd, shopId, shopDomain } = req.query;
@@ -58,6 +94,15 @@ analyticsRouter.get('/hierarchy', async (req: AuthRequest, res: Response) => {
       shopDomain: shopDomain as string | undefined,
     });
 
+    enqueueHotRefresh({
+      accountId: accountId as string,
+      accountName: accountName as string | undefined,
+      dateStart: range.dateStart,
+      dateEnd: range.dateEnd,
+      shopId: resolvedShopId,
+      shopDomain: shopDomain as string | undefined,
+    });
+
     const result = await hierarchyService.getHierarchyFromDb(
       accountId as string,
       range.dateStart,
@@ -71,7 +116,7 @@ analyticsRouter.get('/hierarchy', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// GET /api/analytics/dashboard — DB-First 仪表盘（FB + UTM）
+// GET /api/analytics/dashboard — DB-First 仪表盘（FB + UTM）；浏览即触发后台热同步
 analyticsRouter.get('/dashboard', async (req: AuthRequest, res: Response) => {
   try {
     const { accountId, accountName, dateStart, dateEnd } = req.query;
@@ -82,6 +127,19 @@ analyticsRouter.get('/dashboard', async (req: AuthRequest, res: Response) => {
     const range = dateStart && dateEnd
       ? { dateStart: dateStart as string, dateEnd: dateEnd as string }
       : defaultDateRange();
+
+    const resolvedShopId = await resolveShopId({
+      accountId: accountId as string,
+      accountName: accountName as string | undefined,
+    });
+    enqueueHotRefresh({
+      accountId: accountId as string,
+      accountName: accountName as string | undefined,
+      dateStart: range.dateStart,
+      dateEnd: range.dateEnd,
+      shopId: resolvedShopId,
+    });
+
     const result = await dashboardService.getDashboard(
       accountId as string,
       range.dateStart,
@@ -446,6 +504,143 @@ analyticsRouter.delete('/shop-tokens/:id', async (req: AuthRequest, res: Respons
       return;
     }
     res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- SPU TOP 榜（所有登录用户可读；管理员可写） ---
+
+// GET /api/analytics/spu-top/collections
+analyticsRouter.get('/spu-top/collections', async (req: AuthRequest, res: Response) => {
+  try {
+    const { shopId } = req.query;
+    if (!shopId) {
+      res.status(400).json({ error: '缺少 shopId' });
+      return;
+    }
+    const { fetchSpuTopCollections } = await import('../services/spuTopApiService');
+    const result = await fetchSpuTopCollections(String(shopId));
+    if ('error' in result && result.status) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/analytics/spu-top
+analyticsRouter.get('/spu-top', async (req: AuthRequest, res: Response) => {
+  try {
+    const { date, shopId, collectionId } = req.query;
+    const { fetchSpuTopBoard } = await import('../services/spuTopApiService');
+    const result = await fetchSpuTopBoard({
+      date: date as string | undefined,
+      shopId: shopId as string | undefined,
+      collectionId: collectionId as string | undefined,
+    });
+    if ('error' in result && result.status) {
+      res.status(result.status).json({ error: result.error });
+      return;
+    }
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/analytics/spu-top/column-order — 全员读取表头列顺序
+analyticsRouter.get('/spu-top/column-order', async (_req: AuthRequest, res: Response) => {
+  try {
+    const { getSpuTopColumnOrderMeta } = await import('../models/spuTopColumnOrder');
+    const meta = await getSpuTopColumnOrderMeta();
+    const { DEFAULT_SPU_TOP_COLUMN_ORDER } = await import('../utils/spuTopColumnOrder');
+    res.json({
+      columnOrder: meta?.column_order ?? [...DEFAULT_SPU_TOP_COLUMN_ORDER],
+      updatedAt: meta?.updated_at ?? null,
+      updatedBy: meta?.updated_by ?? null,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/analytics/spu-top/column-order — 管理员保存表头列顺序（全员生效）
+analyticsRouter.put('/spu-top/column-order', requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { columnOrder } = req.body || {};
+    const { validateColumnOrder } = await import('../utils/spuTopColumnOrder');
+    const { saveSpuTopColumnOrder } = await import('../models/spuTopColumnOrder');
+    const validated = validateColumnOrder(columnOrder);
+    if (!validated) {
+      res.status(400).json({ error: '无效的 columnOrder' });
+      return;
+    }
+    const saved = await saveSpuTopColumnOrder(validated, req.userId);
+    res.json({ columnOrder: saved, updatedAt: new Date().toISOString(), updatedBy: req.userId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/analytics/spu-top/reorder — 管理员拖拽排序
+analyticsRouter.put('/spu-top/reorder', requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { shopId, date, collectionId, orderedIds } = req.body || {};
+    if (!shopId || !Array.isArray(orderedIds) || orderedIds.length === 0) {
+      res.status(400).json({ error: '缺少 shopId 或 orderedIds' });
+      return;
+    }
+    const statDate = date || todayDateRange().dateStart;
+    const collId = collectionId ? String(collectionId) : '';
+    const { reorderShopSpuTop } = await import('../models/shoplazzaSpuTop');
+    await reorderShopSpuTop(String(shopId), statDate, collId, orderedIds.map(String));
+    res.json({ ok: true, shopId, statDate, collectionId: collId || null });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/analytics/spu-top/reset-order — 清除手动排序并按综合分重新同步（管理员）
+analyticsRouter.post('/spu-top/reset-order', requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { date, shopId, collectionId } = req.body || {};
+    const statDate = date || todayDateRange().dateStart;
+    const collId = collectionId ? String(collectionId) : '';
+    const { clearManualOrder, clearAllManualOrders } = await import('../models/shoplazzaSpuTop');
+    const { spuTopSyncService } = await import('../services/spuTopSyncService');
+    const { getActiveShopCredentials, getShopCredentialById } = await import('../models/shopCredential');
+
+    if (shopId) {
+      await clearManualOrder(String(shopId), statDate, collId);
+      const shop = await getShopCredentialById(String(shopId));
+      if (!shop) {
+        res.status(404).json({ error: '店铺不存在' });
+        return;
+      }
+      await spuTopSyncService.syncShopSpuTop(shop, statDate, collId, collId || undefined);
+      res.json({ ok: true, statDate, shopId, collectionId: collId || null, cleared: 1 });
+      return;
+    }
+
+    const cleared = await clearAllManualOrders(statDate);
+    const syncResult = await spuTopSyncService.syncAllShopsSpuTop(statDate);
+    res.json({ ok: true, statDate, collectionId: collId || null, cleared, sync: syncResult });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/analytics/spu-top/refresh — 手动触发全店同步（管理员）
+analyticsRouter.post('/spu-top/refresh', requireAdmin, async (req: AuthRequest, res: Response) => {
+  try {
+    const { date } = req.body || {};
+    const { spuTopSyncService } = await import('../services/spuTopSyncService');
+    const statDate = date || todayDateRange().dateStart;
+    const result = await spuTopSyncService.syncAllShopsSpuTop(statDate);
+    res.json({ statDate, ...result });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

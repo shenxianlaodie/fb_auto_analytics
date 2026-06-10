@@ -1,49 +1,56 @@
 import { query, queryOne } from '../models/database';
 import { getSyncState, setRefreshing, touchSyncState } from '../models/syncState';
 import { ShopCredential } from '../models/shopCredential';
-import { ShopTokenService } from './shopTokenService';
 import { StructureSyncService } from './structureSyncService';
 import { MetricsSyncService } from './metricsSyncService';
 import { UtmMatchService } from './utmMatchService';
 import { todayDateRange } from '../utils/todayRange';
 import { getActiveShopIds, isActiveShop } from './activeSyncRegistry';
 import { isAccountInCooldown, isAccountRateLimit, markAccountCooldown } from './fbRateLimit';
+import { getUsageThrottleState } from './fbUsageMonitor';
+import { getTokenForAccount } from './tokenPool';
+import { sleep } from '../utils/sleep';
+import {
+  coldMetricsTtlMs,
+  getAccountTier,
+  hotMetricsTtlMs,
+} from './accountTierService';
+import {
+  isDormantAccount,
+  shouldSkipStructure,
+} from './accountDormantService';
 
-/** 热路径（用户正在查看）：指标/UTM 约 2 分钟 */
-const HOT_METRICS_TTL_MS = 2 * 60 * 1000;
 const HOT_UTM_TTL_MS = 2 * 60 * 1000;
-const HOT_STRUCTURE_TTL_MS = 30 * 60 * 1000;
+const HOT_STRUCTURE_TTL_MS = 5 * 60 * 1000;
 
-/** 冷路径（后台 Cron）：指标 15 分钟、UTM 10 分钟、结构 6 小时 */
-const COLD_METRICS_TTL_MS = 15 * 60 * 1000;
 const COLD_UTM_TTL_MS = 10 * 60 * 1000;
-const STRUCTURE_TTL_MS = 6 * 60 * 60 * 1000;
+const STRUCTURE_TTL_MS = 15 * 60 * 1000;
 
 const SHOP_SYNC_GAP_MS = 800;
-/** 账户间同步间隔：把一轮 Cron 的账户摊平，降低 Facebook 限流 burst */
-const ACCOUNT_SYNC_GAP_MS = 1500;
+const MIN_ACCOUNT_SYNC_GAP_MS = 3000;
+const METRICS_CRON_WINDOW_MS = 14 * 60 * 1000;
 
 const inflightAccounts = new Set<string>();
 const inflightShops = new Set<string>();
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function isStale(lastSyncedAt: string | null | undefined, ttlMs: number): boolean {
   if (!lastSyncedAt) return true;
   return Date.now() - new Date(lastSyncedAt).getTime() > ttlMs;
 }
 
+export type RefreshMode = 'hot' | 'cron-metrics' | 'cron-structure';
+
 export interface RefreshInput {
   accountId: string;
   accountName?: string;
   dateStart: string;
   dateEnd: string;
-  accessToken: string;
+  accessToken?: string;
   shopId?: string;
   shopDomain?: string;
   force?: boolean;
+  mode?: RefreshMode;
+  priority?: boolean;
 }
 
 function accountKey(accountId: string, dateStart: string, dateEnd: string): string {
@@ -97,32 +104,75 @@ export function enqueueShopUtmSync(
   })();
 }
 
+async function resolveAccessToken(accountId: string, provided?: string): Promise<string> {
+  if (provided) return provided;
+  return getTokenForAccount(accountId);
+}
+
 async function runRefreshJob(input: RefreshInput): Promise<void> {
   const cleanId = input.accountId.replace('act_', '');
+  const mode = input.mode || 'hot';
 
   if (!input.force && isAccountInCooldown(cleanId)) {
     console.log(`[SyncScheduler] account=${cleanId} 处于限流冷却中，跳过本次同步`);
     return;
   }
 
-  console.log(`[SyncScheduler] refresh start account=${cleanId} ${input.dateStart}~${input.dateEnd} (hot)`);
+  // 配额水位保护：>=95% 熔断（force 也不放行，避免耗尽最后额度触发真实限流）
+  const throttle = getUsageThrottleState(cleanId);
+  if (throttle === 'halt') {
+    console.warn(`[SyncScheduler] account=${cleanId} 配额水位 >=95%，熔断本次同步`);
+    return;
+  }
+  // >=80% 降频：同步 TTL 加倍
+  const ttlScale = throttle === 'slow' ? 2 : 1;
+  if (throttle === 'slow') {
+    console.warn(`[SyncScheduler] account=${cleanId} 配额水位 >=80%，本轮降频（TTL x2）`);
+  }
+
+  const accessToken = await resolveAccessToken(cleanId, input.accessToken);
 
   const [structureState, metricsState] = await Promise.all([
     getSyncState(cleanId, 'structure', input.dateStart, input.dateEnd),
     getSyncState(cleanId, 'metrics', input.dateStart, input.dateEnd),
   ]);
 
-  const needStructure =
-    input.force || isStale(structureState?.last_synced_at, HOT_STRUCTURE_TTL_MS);
-  const needMetrics =
-    input.force || isStale(metricsState?.last_synced_at, HOT_METRICS_TTL_MS);
+  const tier = await getAccountTier(cleanId);
+  const hotMetricsTtl = hotMetricsTtlMs(tier) * ttlScale;
+  const coldMetricsTtl = coldMetricsTtlMs(tier) * ttlScale;
+  const structureTtl = STRUCTURE_TTL_MS * ttlScale;
+  const hotStructureTtl = HOT_STRUCTURE_TTL_MS * ttlScale;
 
-  if (!needStructure && !needMetrics) {
+  let needMetrics = false;
+  let needStructure = false;
+
+  if (mode === 'cron-metrics') {
+    const dormant = await isDormantAccount(cleanId);
+    const skipStructure = await shouldSkipStructure(cleanId, structureState?.last_synced_at);
+    needMetrics = !dormant && (input.force || isStale(metricsState?.last_synced_at, coldMetricsTtl));
+    needStructure =
+      !skipStructure && (input.force || isStale(structureState?.last_synced_at, structureTtl));
+  } else if (mode === 'cron-structure') {
+    if (await shouldSkipStructure(cleanId, structureState?.last_synced_at)) {
+      console.log(`[SyncScheduler] account=${cleanId} dormant，跳过 structure（24h 内已查）`);
+      return;
+    }
+    needMetrics = false;
+    needStructure = input.force || isStale(structureState?.last_synced_at, structureTtl);
+  } else {
+    needMetrics = input.force || isStale(metricsState?.last_synced_at, hotMetricsTtl);
+    needStructure = input.force || isStale(structureState?.last_synced_at, hotStructureTtl);
+  }
+
+  if (!needMetrics && !needStructure) {
     console.log(`[SyncScheduler] account=${cleanId} fb fresh, skip`);
     return;
   }
 
-  // 指标优先：用户最关心 spend/cpm；结构同步失败不应阻塞指标入库
+  console.log(
+    `[SyncScheduler] refresh start account=${cleanId} ${input.dateStart}~${input.dateEnd} (${mode})`
+  );
+
   let metricsOk = !needMetrics;
   let structureOk = !needStructure;
   let lastErr: any = null;
@@ -130,7 +180,7 @@ async function runRefreshJob(input: RefreshInput): Promise<void> {
   if (needMetrics) {
     await setRefreshing(cleanId, 'metrics', input.dateStart, input.dateEnd, true);
     try {
-      const metricsSync = new MetricsSyncService(input.accessToken);
+      const metricsSync = new MetricsSyncService(accessToken);
       await metricsSync.syncMetrics(input.accountId, input.dateStart, input.dateEnd);
       metricsOk = true;
     } catch (err: any) {
@@ -145,8 +195,12 @@ async function runRefreshJob(input: RefreshInput): Promise<void> {
   if (needStructure) {
     await setRefreshing(cleanId, 'structure', input.dateStart, input.dateEnd, true);
     try {
-      const structureSync = new StructureSyncService(input.accessToken);
-      await structureSync.syncStructure(input.accountId, input.dateStart, input.dateEnd);
+      const structureSync = new StructureSyncService(accessToken);
+      // 当天已有全量基线时走增量（updated_time 过滤）；每天首次同步自动全量兜底
+      const sinceMs = structureState?.last_synced_at
+        ? new Date(structureState.last_synced_at).getTime()
+        : undefined;
+      await structureSync.syncStructure(input.accountId, input.dateStart, input.dateEnd, { sinceMs });
       structureOk = true;
     } catch (err: any) {
       lastErr = err;
@@ -192,14 +246,26 @@ async function persistAdAccount(input: RefreshInput): Promise<void> {
   );
 }
 
-/** Cron：冷路径刷新 metrics；活跃账户用短 TTL */
+/** Cron：冷路径刷新 metrics + structure（15 分钟 TTL）；活跃账户 metrics 用短 TTL */
 export async function runMetricsCron(): Promise<void> {
-  const users = await query(`SELECT id, access_token FROM users WHERE access_token IS NOT NULL`);
-  if (users.length === 0) return;
+  const poolCheck = await queryOne(
+    `SELECT id FROM fb_token_pool WHERE status = 'active' LIMIT 1`
+  );
+  const userCheck = await queryOne(
+    `SELECT access_token FROM users WHERE access_token IS NOT NULL LIMIT 1`
+  );
+  if (!poolCheck && !userCheck) return;
 
   const { dateStart, dateEnd } = todayDateRange();
   const activeIds = new Set(
     (await import('./activeSyncRegistry')).getActiveAccountIds()
+  );
+
+  const priorityRows = await query(
+    `SELECT account_id FROM ad_accounts WHERE sync_priority = true`
+  );
+  const priorityIds = new Set(
+    priorityRows.map((r: any) => String(r.account_id).replace('act_', ''))
   );
 
   const accounts = await query(
@@ -208,46 +274,61 @@ export async function runMetricsCron(): Promise<void> {
      UNION SELECT DISTINCT account_id AS ad_account_id FROM ad_accounts`
   );
 
-  // 先筛出本轮需要同步的账户，再均匀摊到时间窗内，避免 35 账户瞬间扎堆触发限流
-  const due: Array<{ cleanId: string; hot: boolean }> = [];
+  const due: Array<{ cleanId: string; hot: boolean; priority: boolean }> = [];
   for (const row of accounts) {
     const accountId = row.ad_account_id;
     if (!accountId) continue;
     const cleanId = String(accountId).replace('act_', '');
 
     if (isAccountInCooldown(cleanId)) continue;
+    if (getUsageThrottleState(cleanId) === 'halt') {
+      console.warn(`[MetricsCron] account=${cleanId} 配额水位 >=95%，熔断跳过`);
+      continue;
+    }
 
     const hot = activeIds.has(cleanId);
-    const ttl = hot ? HOT_METRICS_TTL_MS : COLD_METRICS_TTL_MS;
+    const tier = await getAccountTier(cleanId);
+    const ttl = hot ? hotMetricsTtlMs(tier) : coldMetricsTtlMs(tier);
 
-    const state = await getSyncState(cleanId, 'metrics', dateStart, dateEnd);
-    if (!isStale(state?.last_synced_at, ttl)) continue;
+    const [metricsState, structureState] = await Promise.all([
+      getSyncState(cleanId, 'metrics', dateStart, dateEnd),
+      getSyncState(cleanId, 'structure', dateStart, dateEnd),
+    ]);
+    const dormant = await isDormantAccount(cleanId);
+    const skipStructure = await shouldSkipStructure(cleanId, structureState?.last_synced_at);
+    const metricsDue = !dormant && isStale(metricsState?.last_synced_at, ttl);
+    const structureDue =
+      !skipStructure && isStale(structureState?.last_synced_at, STRUCTURE_TTL_MS);
+    if (!metricsDue && !structureDue) continue;
 
-    due.push({ cleanId, hot });
+    due.push({
+      cleanId,
+      hot,
+      priority: priorityIds.has(cleanId) || hot,
+    });
   }
 
   if (due.length === 0) return;
 
-  // 活跃账户优先；其余按账户间隔摊平
-  due.sort((a, b) => (a.hot === b.hot ? 0 : a.hot ? -1 : 1));
+  due.sort((a, b) => {
+    if (a.priority !== b.priority) return a.priority ? -1 : 1;
+    if (a.hot !== b.hot) return a.hot ? -1 : 1;
+    return 0;
+  });
+
+  const gap = Math.max(
+    MIN_ACCOUNT_SYNC_GAP_MS,
+    Math.floor(METRICS_CRON_WINDOW_MS / due.length)
+  );
 
   for (const { cleanId } of due) {
-    const tokenRow = await query(
-      `SELECT u.access_token FROM ad_accounts aa
-       JOIN users u ON aa.user_id = u.id
-       WHERE aa.account_id IN ($1, $2) LIMIT 1`,
-      [cleanId, `act_${cleanId}`]
-    );
-    const token = tokenRow[0]?.access_token || users[0].access_token;
-
     enqueueRefresh({
       accountId: cleanId,
       dateStart,
       dateEnd,
-      accessToken: token,
+      mode: 'cron-metrics',
     });
-
-    await sleep(ACCOUNT_SYNC_GAP_MS);
+    await sleep(gap);
   }
 }
 
@@ -280,29 +361,3 @@ export async function runShoplazzaCron(): Promise<void> {
   }
 }
 
-/** Cron：结构每 6 小时 */
-export async function runStructureCron(): Promise<void> {
-  const users = await query(`SELECT access_token FROM users WHERE access_token IS NOT NULL LIMIT 1`);
-  if (users.length === 0) return;
-
-  const { dateStart, dateEnd } = todayDateRange();
-
-  const accounts = await query(`SELECT DISTINCT ad_account_id FROM fb_campaigns`);
-  for (const row of accounts) {
-    const cleanId = String(row.ad_account_id).replace('act_', '');
-
-    if (isAccountInCooldown(cleanId)) continue;
-
-    const state = await getSyncState(cleanId, 'structure', dateStart, dateEnd);
-    if (!isStale(state?.last_synced_at, STRUCTURE_TTL_MS)) continue;
-
-    enqueueRefresh({
-      accountId: cleanId,
-      dateStart,
-      dateEnd,
-      accessToken: users[0].access_token,
-    });
-
-    await sleep(ACCOUNT_SYNC_GAP_MS);
-  }
-}

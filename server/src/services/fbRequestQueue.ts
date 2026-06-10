@@ -1,8 +1,6 @@
 import { isAccountRateLimit, isRateLimitError } from './fbRateLimit';
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { sleep } from '../utils/sleep';
+import { onAppRateLimitError } from './tokenPool';
 
 interface QueueTask<T> {
   fn: () => Promise<T>;
@@ -10,19 +8,41 @@ interface QueueTask<T> {
   reject: (reason: unknown) => void;
 }
 
+interface QueueOptions {
+  maxConcurrent: number;
+  minIntervalMs: number;
+  label: string;
+}
+
 class FBRequestQueue {
-  private static instance: FBRequestQueue;
+  private static webInstance: FBRequestQueue;
+  private static syncInstance: FBRequestQueue;
   private queue: QueueTask<any>[] = [];
   private active = 0;
-  private readonly maxConcurrent = 2;
-  private readonly minIntervalMs = 500;
   private lastRequestAt = 0;
 
-  static getInstance(): FBRequestQueue {
-    if (!FBRequestQueue.instance) {
-      FBRequestQueue.instance = new FBRequestQueue();
+  constructor(private readonly opts: QueueOptions) {}
+
+  static getWebQueue(): FBRequestQueue {
+    if (!FBRequestQueue.webInstance) {
+      FBRequestQueue.webInstance = new FBRequestQueue({
+        label: 'web',
+        maxConcurrent: 2,
+        minIntervalMs: 500,
+      });
     }
-    return FBRequestQueue.instance;
+    return FBRequestQueue.webInstance;
+  }
+
+  static getSyncQueue(): FBRequestQueue {
+    if (!FBRequestQueue.syncInstance) {
+      FBRequestQueue.syncInstance = new FBRequestQueue({
+        label: 'sync',
+        maxConcurrent: 1,
+        minIntervalMs: 800,
+      });
+    }
+    return FBRequestQueue.syncInstance;
   }
 
   enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -33,7 +53,7 @@ class FBRequestQueue {
   }
 
   private processQueue(): void {
-    if (this.active >= this.maxConcurrent || this.queue.length === 0) return;
+    if (this.active >= this.opts.maxConcurrent || this.queue.length === 0) return;
 
     const task = this.queue.shift()!;
     this.active++;
@@ -41,7 +61,7 @@ class FBRequestQueue {
     (async () => {
       try {
         const now = Date.now();
-        const wait = this.minIntervalMs - (now - this.lastRequestAt);
+        const wait = this.opts.minIntervalMs - (now - this.lastRequestAt);
         if (wait > 0) await sleep(wait);
 
         const result = await this.executeWithRetry(task.fn);
@@ -57,13 +77,21 @@ class FBRequestQueue {
   }
 
   private async executeWithRetry<T>(fn: () => Promise<T>, maxRetries = 4): Promise<T> {
+    let tokenCooled = false;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         return await fn();
       } catch (err: any) {
         if (isAccountRateLimit(err) || !isRateLimitError(err) || attempt === maxRetries) throw err;
         const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
-        console.warn(`[FB Queue] Rate limited, retry ${attempt + 1}/${maxRetries} in ${delay}ms`);
+        console.warn(
+          `[FB Queue:${this.opts.label}] Rate limited, retry ${attempt + 1}/${maxRetries} in ${delay}ms`
+        );
+        // 每次请求最多冷却一个 Token，避免重试链误伤多个 Token
+        if (!tokenCooled) {
+          await onAppRateLimitError(this.opts.label === 'sync');
+          tokenCooled = true;
+        }
         await sleep(delay);
       }
     }
@@ -71,4 +99,13 @@ class FBRequestQueue {
   }
 }
 
-export const fbQueue = FBRequestQueue.getInstance();
+/** Web 进程实时查询队列 */
+export const fbQueue = FBRequestQueue.getWebQueue();
+
+/** Sync 进程后台同步队列（更低并发） */
+export const fbSyncQueue = FBRequestQueue.getSyncQueue();
+
+/** 根据进程类型选择队列 */
+export function getFbQueue(): FBRequestQueue {
+  return process.env.SYNC_WORKER === '1' ? fbSyncQueue : fbQueue;
+}

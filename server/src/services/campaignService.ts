@@ -45,10 +45,11 @@ export class CampaignService {
     );
   }
 
-  async updateCampaign(campaignId: string, data: { name?: string; status?: string }) {
+  async updateCampaign(campaignId: string, data: { name?: string; status?: string; budget?: { daily?: number } }) {
     const params: Record<string, any> = {};
     if (data.name) params.name = data.name;
     if (data.status) params.status = data.status;
+    if (data.budget?.daily) params.daily_budget = Math.round(data.budget.daily);
     return this.fbClient.updateCampaign(campaignId, this.accessToken, params);
   }
 

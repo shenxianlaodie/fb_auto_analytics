@@ -2,7 +2,9 @@ import axios, { AxiosInstance } from 'axios';
 import fs from 'fs';
 const { HttpsProxyAgent } = require('https-proxy-agent');
 import { config } from '../config';
-import { fbQueue } from './fbRequestQueue';
+import { getFbQueue } from './fbRequestQueue';
+import { sleep } from '../utils/sleep';
+import { recordUsageHeaders } from './fbUsageMonitor';
 
 interface TokenExchangeResult {
   access_token: string;
@@ -98,13 +100,15 @@ export class FacebookClient {
   // --- Graph API Helpers ---
 
   private async get(edge: string, accessToken: string, params: Record<string, any> = {}): Promise<any> {
-    return fbQueue.enqueue(async () => {
+    return getFbQueue().enqueue(async () => {
       try {
         const response = await this.axios.get(`${this.baseUrl}/${edge}`, {
           params: { ...params, access_token: accessToken },
         });
+        recordUsageHeaders(edge, response.headers);
         return response.data;
       } catch (err: any) {
+        recordUsageHeaders(edge, err.response?.headers);
         console.error('[FB API Error] edge:', edge, 'status:', err.response?.status, 'body:', JSON.stringify(err.response?.data?.error));
         throw err;
       }
@@ -112,16 +116,22 @@ export class FacebookClient {
   }
 
   private async post(edge: string, accessToken: string, data: Record<string, any> = {}): Promise<any> {
-    return fbQueue.enqueue(async () => {
-      const response = await this.axios.post(`${this.baseUrl}/${edge}`, data, {
-        params: { access_token: accessToken },
-      });
-      return response.data;
+    return getFbQueue().enqueue(async () => {
+      try {
+        const response = await this.axios.post(`${this.baseUrl}/${edge}`, data, {
+          params: { access_token: accessToken },
+        });
+        recordUsageHeaders(edge, response.headers);
+        return response.data;
+      } catch (err: any) {
+        recordUsageHeaders(edge, err.response?.headers);
+        throw err;
+      }
     });
   }
 
   private async postFormData(edge: string, accessToken: string, formData: Record<string, any>): Promise<any> {
-    return fbQueue.enqueue(async () => {
+    return getFbQueue().enqueue(async () => {
       const response = await this.axios.post(`${this.baseUrl}/${edge}`, formData, {
         params: { access_token: accessToken },
         headers: { 'Content-Type': 'multipart/form-data' },
@@ -156,54 +166,61 @@ export class FacebookClient {
     accessToken: string,
     fields: string,
     pageSize = 100,
-    maxPages = 20
+    maxPages = 20,
+    pageGapMs = 0,
+    extraParams?: Record<string, any>
   ): Promise<any[]> {
     const all: any[] = [];
     let after: string | undefined;
+    let limit = pageSize;
     for (let page = 0; page < maxPages; page++) {
-      const params: Record<string, any> = { fields, limit: pageSize };
+      const params: Record<string, any> = { ...extraParams, fields, limit };
       if (after) params.after = after;
-      const resp = await this.get(edge, accessToken, params);
+      let resp: any;
+      try {
+        resp = await this.get(edge, accessToken, params);
+      } catch (err: any) {
+        // 数据量过大错误 → 减半页大小重试当前页
+        if (limit > 50) {
+          limit = Math.max(50, Math.floor(limit / 2));
+          console.warn(`[FB Client] ${edge} page failed, retry with limit=${limit}`);
+          resp = await this.get(edge, accessToken, { ...extraParams, fields, limit, ...(after ? { after } : {}) });
+        } else {
+          throw err;
+        }
+      }
       all.push(...(resp.data || []));
       after = resp.paging?.cursors?.after;
       if (!after) break;
+      if (pageGapMs > 0) await sleep(pageGapMs);
     }
     return all;
-  }
-
-  /** 轻量拉取：仅 id + status（随 metrics 同步刷新投放状态） */
-  async getAllCampaignStatuses(accountId: string, accessToken: string): Promise<any[]> {
-    return this.fetchAllPages(`act_${accountId}/campaigns`, accessToken, 'id,status');
-  }
-
-  async getAllAdSetStatuses(accountId: string, accessToken: string): Promise<any[]> {
-    return this.fetchAllPages(`act_${accountId}/adsets`, accessToken, 'id,status');
-  }
-
-  async getAllAdStatuses(accountId: string, accessToken: string): Promise<any[]> {
-    return this.fetchAllPages(`act_${accountId}/ads`, accessToken, 'id,status');
   }
 
   async getAllCampaigns(
     accountId: string,
     accessToken: string,
     pageSize: number = 100,
-    maxPages: number = 50
+    maxPages: number = 50,
+    pageGapMs = 0,
+    extraParams?: Record<string, any>
   ): Promise<any[]> {
     const fields =
       'id,name,objective,status,special_ad_categories,created_time,updated_time,daily_budget,lifetime_budget';
-    return this.fetchAllPages(`act_${accountId}/campaigns`, accessToken, fields, pageSize, maxPages);
+    return this.fetchAllPages(`act_${accountId}/campaigns`, accessToken, fields, pageSize, maxPages, pageGapMs, extraParams);
   }
 
   async getAllAdSets(
     accountId: string,
     accessToken: string,
     pageSize: number = 100,
-    maxPages: number = 50
+    maxPages: number = 50,
+    pageGapMs = 0,
+    extraParams?: Record<string, any>
   ): Promise<any[]> {
     const fields =
       'id,name,campaign_id,status,targeting,bid_strategy,daily_budget,lifetime_budget,billing_event,optimization_goal,start_time,end_time,created_time';
-    return this.fetchAllPages(`act_${accountId}/adsets`, accessToken, fields, pageSize, maxPages);
+    return this.fetchAllPages(`act_${accountId}/adsets`, accessToken, fields, pageSize, maxPages, pageGapMs, extraParams);
   }
 
   async getCampaigns(accountId: string, accessToken: string, limit: number = 25, after?: string): Promise<any> {
@@ -268,8 +285,9 @@ export class FacebookClient {
 
   // --- Ads ---
 
-  async getAds(accountId: string, accessToken: string, filters: { adsetId?: string; campaignId?: string }, limit: number = 25, after?: string): Promise<any> {
+  async getAds(accountId: string, accessToken: string, filters: { adsetId?: string; campaignId?: string }, limit: number = 25, after?: string, extraParams?: Record<string, any>): Promise<any> {
     const params: Record<string, any> = {
+      ...extraParams,
       fields: 'id,name,adset_id,campaign_id,status,creative{id,effective_object_story_id,object_story_id},created_time',
       limit,
     };
@@ -293,15 +311,18 @@ export class FacebookClient {
     accessToken: string,
     filters: { adsetId?: string; campaignId?: string } = {},
     pageSize: number = 100,
-    maxPages: number = 20
+    maxPages: number = 20,
+    pageGapMs = 0,
+    extraParams?: Record<string, any>
   ): Promise<any[]> {
     const all: any[] = [];
     let after: string | undefined;
     for (let page = 0; page < maxPages; page++) {
-      const resp = await this.getAds(accountId, accessToken, filters, pageSize, after);
+      const resp = await this.getAds(accountId, accessToken, filters, pageSize, after, extraParams);
       all.push(...(resp.data || []));
       after = resp.paging?.cursors?.after;
       if (!after) break;
+      if (pageGapMs > 0) await sleep(pageGapMs);
     }
     return all;
   }
@@ -375,7 +396,7 @@ export class FacebookClient {
     form.append('access_token', accessToken);
     form.append('file', fileStream);
 
-    const response = await fbQueue.enqueue(() =>
+    const response = await getFbQueue().enqueue(() =>
       this.axios.post(url, form, { headers: form.getHeaders() })
     );
 
@@ -397,7 +418,7 @@ export class FacebookClient {
     form.append('access_token', accessToken);
     form.append('file', fileStream);
 
-    const response = await fbQueue.enqueue(() =>
+    const response = await getFbQueue().enqueue(() =>
       this.axios.post(url, form, { headers: form.getHeaders() })
     );
 

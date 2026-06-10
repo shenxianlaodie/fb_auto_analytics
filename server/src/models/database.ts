@@ -20,7 +20,28 @@ CREATE TABLE IF NOT EXISTS ad_accounts (
   account_name TEXT,
   currency TEXT,
   timezone TEXT,
-  is_active BOOLEAN DEFAULT true
+  is_active BOOLEAN DEFAULT true,
+  sync_tier TEXT DEFAULT 'auto',
+  ad_count_cache INTEGER DEFAULT 0,
+  empty_structure_streak INTEGER DEFAULT 0,
+  dormant_since TIMESTAMPTZ,
+  sync_priority BOOLEAN DEFAULT false
+);
+
+CREATE TABLE IF NOT EXISTS fb_token_pool (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  access_token TEXT NOT NULL,
+  owner_name TEXT,
+  user_id UUID REFERENCES users(id),
+  assigned_accounts JSONB DEFAULT '[]'::jsonb,
+  status TEXT DEFAULT 'active',
+  cooldown_until TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ,
+  call_count INTEGER DEFAULT 0,
+  last_used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS batch_jobs (
@@ -192,6 +213,49 @@ CREATE TABLE IF NOT EXISTS shop_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_shop_tokens_active ON shop_tokens(is_active);
 
+CREATE TABLE IF NOT EXISTS shoplazza_spu_top (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id TEXT NOT NULL,
+  shop_domain TEXT NOT NULL,
+  shop_name TEXT,
+  stat_date TEXT NOT NULL,
+  collection_id TEXT NOT NULL DEFAULT '',
+  collection_title TEXT,
+  rank INT NOT NULL,
+  spu TEXT NOT NULL,
+  product_id TEXT,
+  title TEXT,
+  image_url TEXT,
+  product_created_at TEXT,
+  order_count INT DEFAULT 0,
+  add_cart_users INT DEFAULT 0,
+  view_users INT DEFAULT 0,
+  add_to_cart_rate NUMERIC(10,4) DEFAULT 0,
+  transform_rate NUMERIC(10,4) DEFAULT 0,
+  composite_score NUMERIC(12,4) DEFAULT 0,
+  synced_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(shop_id, stat_date, collection_id, rank)
+);
+
+CREATE INDEX IF NOT EXISTS idx_spu_top_lookup
+  ON shoplazza_spu_top(stat_date, shop_id, collection_id);
+
+CREATE TABLE IF NOT EXISTS shoplazza_spu_top_meta (
+  shop_id TEXT NOT NULL,
+  stat_date TEXT NOT NULL,
+  collection_id TEXT NOT NULL DEFAULT '',
+  manual_order BOOLEAN DEFAULT false,
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (shop_id, stat_date, collection_id)
+);
+
+CREATE TABLE IF NOT EXISTS spu_top_column_order (
+  id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  column_order JSONB NOT NULL DEFAULT '[]'::jsonb,
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_by TEXT
+);
+
 CREATE TABLE IF NOT EXISTS sync_state (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   ad_account_id TEXT NOT NULL,
@@ -250,6 +314,32 @@ export async function initDatabase(): Promise<Pool> {
       ON shoplazza_utm(shop_id, dimension, utm_value, date_start, date_end)
     `);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS accounts_synced_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sync_tier TEXT DEFAULT 'auto'`);
+    await client.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS ad_count_cache INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS empty_structure_streak INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS dormant_since TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sync_priority BOOLEAN DEFAULT false`);
+    await client.query(`ALTER TABLE shoplazza_spu_top ADD COLUMN IF NOT EXISTS product_created_at TEXT`);
+    await client.query(`ALTER TABLE shoplazza_spu_top ADD COLUMN IF NOT EXISTS composite_score NUMERIC(12,4) DEFAULT 0`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS fb_token_pool (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name TEXT NOT NULL,
+        access_token TEXT NOT NULL,
+        owner_name TEXT,
+        user_id UUID REFERENCES users(id),
+        assigned_accounts JSONB DEFAULT '[]'::jsonb,
+        status TEXT DEFAULT 'active',
+        cooldown_until TIMESTAMPTZ,
+        expires_at TIMESTAMPTZ,
+        call_count INTEGER DEFAULT 0,
+        last_used_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`ALTER TABLE fb_token_pool ADD COLUMN IF NOT EXISTS assigned_accounts JSONB DEFAULT '[]'::jsonb`);
+    await client.query(`ALTER TABLE fb_token_pool ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id)`);
     initialized = true;
     console.log('[DB] PostgreSQL tables initialized');
     console.log(`[DB] Connected to ${host}:${port}/${database}`);

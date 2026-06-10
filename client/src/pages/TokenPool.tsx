@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { Table, Button, Modal, Form, Input, Tag, Space, Popconfirm, message, Card, Statistic, Row, Col } from 'antd';
-import { PlusOutlined, ReloadOutlined, KeyOutlined, LinkOutlined } from '@ant-design/icons';
+import { Table, Button, Modal, Form, Input, Tag, Space, Popconfirm, message, Card, Statistic, Row, Col, Typography } from 'antd';
+import { PlusOutlined, ReloadOutlined, KeyOutlined, LinkOutlined, WarningOutlined } from '@ant-design/icons';
 import { useSearchParams } from 'react-router-dom';
 import api from '../services/api';
 
@@ -9,11 +9,20 @@ interface PoolToken {
   name: string;
   access_token: string;
   owner_name: string | null;
+  assigned_accounts: string[] | null;
   status: 'active' | 'cooling' | 'disabled' | 'expired';
   cooldown_until: string | null;
+  expires_at: string | null;
   call_count: number;
   last_used_at: string | null;
   created_at: string;
+}
+
+interface RateLimitEvent {
+  accountId: string;
+  type: 'account' | 'token';
+  at: string;
+  message?: string;
 }
 
 const statusMap: Record<string, { color: string; label: string }> = {
@@ -23,12 +32,24 @@ const statusMap: Record<string, { color: string; label: string }> = {
   expired: { color: 'red', label: '已过期' },
 };
 
+function formatCooldownRemaining(until: string | null): string {
+  if (!until) return '-';
+  const ms = new Date(until).getTime() - Date.now();
+  if (ms <= 0) return '即将恢复';
+  const min = Math.ceil(ms / 60000);
+  return `约 ${min} 分钟`;
+}
+
 export const TokenPool: React.FC = () => {
   const [tokens, setTokens] = useState<PoolToken[]>([]);
+  const [rateLimits, setRateLimits] = useState<RateLimitEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const [assignModalOpen, setAssignModalOpen] = useState(false);
+  const [assignTarget, setAssignTarget] = useState<PoolToken | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [form] = Form.useForm();
+  const [assignForm] = Form.useForm();
   const [searchParams] = useSearchParams();
   const successMsg = searchParams.get('success');
   const errorMsg = searchParams.get('error');
@@ -36,9 +57,13 @@ export const TokenPool: React.FC = () => {
   const fetchTokens = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await api.get('/tokens');
-      setTokens(resp.data.data || []);
-    } catch (err: any) {
+      const [tokenResp, statsResp] = await Promise.all([
+        api.get('/tokens'),
+        api.get('/tokens/stats'),
+      ]);
+      setTokens(tokenResp.data.data || []);
+      setRateLimits(statsResp.data.recentRateLimits || []);
+    } catch {
       message.error('获取 Token 列表失败');
     } finally {
       setLoading(false);
@@ -57,7 +82,7 @@ export const TokenPool: React.FC = () => {
     try {
       const resp = await api.get('/tokens/connect');
       window.location.href = resp.data.redirectUrl;
-    } catch (err: any) {
+    } catch {
       message.error('获取授权链接失败');
       setConnecting(false);
     }
@@ -91,6 +116,31 @@ export const TokenPool: React.FC = () => {
     fetchTokens();
   };
 
+  const openAssign = (record: PoolToken) => {
+    setAssignTarget(record);
+    assignForm.setFieldsValue({
+      assignedAccounts: (record.assigned_accounts || []).join('\n'),
+    });
+    setAssignModalOpen(true);
+  };
+
+  const handleAssign = async () => {
+    if (!assignTarget) return;
+    try {
+      const values = await assignForm.validateFields();
+      const accounts = String(values.assignedAccounts || '')
+        .split(/[\n,]+/)
+        .map((s: string) => s.trim().replace(/^act_/, ''))
+        .filter(Boolean);
+      await api.put(`/tokens/${assignTarget.id}`, { assignedAccounts: accounts });
+      message.success('账户绑定已更新');
+      setAssignModalOpen(false);
+      fetchTokens();
+    } catch (err: any) {
+      if (err.response) message.error(err.response.data?.error || '保存失败');
+    }
+  };
+
   const activeCount = tokens.filter(t => t.status === 'active').length;
   const coolingCount = tokens.filter(t => t.status === 'cooling').length;
   const expiredCount = tokens.filter(t => t.status === 'expired').length;
@@ -104,8 +154,24 @@ export const TokenPool: React.FC = () => {
     },
     { title: '所属人', dataIndex: 'owner_name', key: 'owner' },
     {
+      title: '绑定账户', key: 'assigned',
+      render: (_: unknown, record: PoolToken) => {
+        const n = record.assigned_accounts?.length || 0;
+        return n > 0 ? <Tag>{n} 个</Tag> : <span style={{ color: '#999' }}>自动匹配</span>;
+      },
+    },
+    {
       title: '状态', dataIndex: 'status', key: 'status',
-      render: (s: string) => <Tag color={statusMap[s]?.color}>{statusMap[s]?.label || s}</Tag>,
+      render: (s: string, record: PoolToken) => (
+        <Space direction="vertical" size={0}>
+          <Tag color={statusMap[s]?.color}>{statusMap[s]?.label || s}</Tag>
+          {s === 'cooling' && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {formatCooldownRemaining(record.cooldown_until)}
+            </Typography.Text>
+          )}
+        </Space>
+      ),
     },
     {
       title: '过期时间', dataIndex: 'expires_at', key: 'expires',
@@ -123,8 +189,9 @@ export const TokenPool: React.FC = () => {
     },
     {
       title: '操作', key: 'actions',
-      render: (_: any, record: PoolToken) => (
+      render: (_: unknown, record: PoolToken) => (
         <Space>
+          <Button size="small" onClick={() => openAssign(record)}>绑定账户</Button>
           <Button
             size="small"
             type={record.status === 'disabled' ? 'primary' : 'default'}
@@ -140,14 +207,32 @@ export const TokenPool: React.FC = () => {
     },
   ];
 
+  const rateLimitColumns = [
+    {
+      title: '时间',
+      dataIndex: 'at',
+      key: 'at',
+      render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+    },
+    {
+      title: '类型',
+      dataIndex: 'type',
+      key: 'type',
+      render: (t: string) => (t === 'account' ? '账户限流' : 'Token 限流'),
+    },
+    { title: '账户', dataIndex: 'accountId', key: 'accountId', render: (v: string) => v || '-' },
+    { title: '说明', dataIndex: 'message', key: 'message' },
+  ];
+
   return (
     <div>
       <Row gutter={16} style={{ marginBottom: 24 }}>
-        <Col span={6}><Card><Statistic title="Token 总数" value={tokens.length} prefix={<KeyOutlined />} /></Card></Col>
-        <Col span={6}><Card><Statistic title="在线" value={activeCount} valueStyle={{ color: '#3f8600' }} /></Card></Col>
-        <Col span={6}><Card><Statistic title="冷却中" value={coolingCount} valueStyle={{ color: '#fa8c16' }} /></Card></Col>
-        <Col span={6}><Card><Statistic title="已过期" value={expiredCount} valueStyle={{ color: '#cf1322' }} /></Card></Col>
-        <Col span={6}><Card><Statistic title="累计调用" value={totalCalls} /></Card></Col>
+        <Col span={4}><Card><Statistic title="Token 总数" value={tokens.length} prefix={<KeyOutlined />} /></Card></Col>
+        <Col span={4}><Card><Statistic title="在线" value={activeCount} valueStyle={{ color: '#3f8600' }} /></Card></Col>
+        <Col span={4}><Card><Statistic title="冷却中" value={coolingCount} valueStyle={{ color: '#fa8c16' }} /></Card></Col>
+        <Col span={4}><Card><Statistic title="已过期" value={expiredCount} valueStyle={{ color: '#cf1322' }} /></Card></Col>
+        <Col span={4}><Card><Statistic title="累计调用" value={totalCalls} /></Card></Col>
+        <Col span={4}><Card><Statistic title="近期限流" value={rateLimits.length} prefix={<WarningOutlined />} valueStyle={{ color: rateLimits.length > 0 ? '#fa8c16' : undefined }} /></Card></Col>
       </Row>
 
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
@@ -160,6 +245,19 @@ export const TokenPool: React.FC = () => {
       </div>
 
       <Table dataSource={tokens} columns={columns} rowKey="id" loading={loading} />
+
+      {rateLimits.length > 0 && (
+        <>
+          <h4 style={{ marginTop: 32 }}>最近限流记录</h4>
+          <Table
+            dataSource={rateLimits}
+            columns={rateLimitColumns}
+            rowKey={(r) => `${r.at}-${r.accountId}-${r.type}`}
+            pagination={{ pageSize: 10 }}
+            size="small"
+          />
+        </>
+      )}
 
       <Modal
         title="添加 Facebook Token"
@@ -177,6 +275,23 @@ export const TokenPool: React.FC = () => {
           </Form.Item>
           <Form.Item name="ownerName" label="所属人">
             <Input placeholder="Token 所属的 Facebook 用户名" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={`绑定广告账户 — ${assignTarget?.name || ''}`}
+        open={assignModalOpen}
+        onOk={handleAssign}
+        onCancel={() => setAssignModalOpen(false)}
+        destroyOnClose
+      >
+        <Typography.Paragraph type="secondary">
+          每行一个账户 ID（可带 act_ 前缀）。留空则使用自动匹配（按 ad_accounts.user_id）。
+        </Typography.Paragraph>
+        <Form form={assignForm} layout="vertical">
+          <Form.Item name="assignedAccounts">
+            <Input.TextArea rows={8} placeholder="647601474804558&#10;1113604493975536" />
           </Form.Item>
         </Form>
       </Modal>

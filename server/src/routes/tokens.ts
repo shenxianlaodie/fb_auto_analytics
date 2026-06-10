@@ -1,7 +1,16 @@
 import { Router, Response, Request } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requireAdmin } from '../middleware/permission';
-import { addToken, removeToken, updateTokenStatus, listTokens, getTokenStats, userNeedsBind } from '../services/tokenPool';
+import {
+  addToken,
+  removeToken,
+  updateTokenStatus,
+  updateTokenAssignments,
+  listTokens,
+  getTokenStats,
+  userNeedsBind,
+} from '../services/tokenPool';
+import { getRecentRateLimitEvents } from '../services/fbRateLimitMonitor';
 import { getUserById } from '../models/user';
 import { config } from '../config';
 
@@ -99,6 +108,11 @@ tokensRouter.get('/stats', async (_req: AuthRequest, res: Response) => {
   }
 });
 
+// GET /api/tokens/rate-limits — 最近限流事件
+tokensRouter.get('/rate-limits', async (_req: AuthRequest, res: Response) => {
+  res.json({ data: getRecentRateLimitEvents(30) });
+});
+
 // POST /api/tokens — 添加 Token（自动换长效）
 tokensRouter.post('/', async (req: AuthRequest, res: Response) => {
   try {
@@ -118,11 +132,16 @@ tokensRouter.post('/', async (req: AuthRequest, res: Response) => {
   }
 });
 
-// PUT /api/tokens/:id — 更新 Token 状态
+// PUT /api/tokens/:id — 更新 Token 状态或绑定账户
 tokensRouter.put('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    const { status } = req.body;
-    await updateTokenStatus(req.params.id, status);
+    const { status, assignedAccounts } = req.body;
+    if (assignedAccounts !== undefined) {
+      await updateTokenAssignments(req.params.id, assignedAccounts);
+    }
+    if (status) {
+      await updateTokenStatus(req.params.id, status);
+    }
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

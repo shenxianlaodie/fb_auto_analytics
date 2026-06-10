@@ -176,6 +176,52 @@ export async function updateFbAdMetaStatus(
   );
 }
 
+/** 系统内操作成功后立即写回本地（按全局唯一 ID，不需要 accountId） */
+export async function writeBackCampaign(
+  campaignId: string,
+  fields: { status?: string; dailyBudgetCents?: number }
+): Promise<void> {
+  if (fields.status !== undefined) {
+    await query(
+      `UPDATE fb_campaigns SET status = $2, synced_at = NOW() WHERE campaign_id = $1`,
+      [campaignId, fields.status]
+    );
+  }
+  if (fields.dailyBudgetCents !== undefined) {
+    await query(
+      `UPDATE fb_campaigns SET daily_budget = $2, synced_at = NOW() WHERE campaign_id = $1`,
+      [campaignId, String(Math.round(fields.dailyBudgetCents))]
+    );
+  }
+}
+
+export async function writeBackAdset(
+  adsetId: string,
+  fields: { status?: string; dailyBudgetCents?: number }
+): Promise<void> {
+  if (fields.status !== undefined) {
+    await query(
+      `UPDATE fb_adsets SET status = $2, synced_at = NOW() WHERE adset_id = $1`,
+      [adsetId, fields.status]
+    );
+  }
+  if (fields.dailyBudgetCents !== undefined) {
+    await query(
+      `UPDATE fb_adsets SET daily_budget = $2, synced_at = NOW() WHERE adset_id = $1`,
+      [adsetId, String(Math.round(fields.dailyBudgetCents))]
+    );
+  }
+}
+
+export async function writeBackAd(adId: string, fields: { status?: string }): Promise<void> {
+  if (fields.status !== undefined) {
+    await query(
+      `UPDATE fb_ads_meta SET status = $2, synced_at = NOW() WHERE ad_id = $1`,
+      [adId, fields.status]
+    );
+  }
+}
+
 export async function getFbCampaigns(adAccountId: string): Promise<FbCampaignRecord[]> {
   return query(
     `SELECT * FROM fb_campaigns WHERE ad_account_id = $1 ORDER BY name`,

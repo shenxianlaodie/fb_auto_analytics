@@ -3,6 +3,8 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { FacebookClient } from '../services/facebookClient';
 import { getCachedAccountsForUser, upsertAccountsForUser } from '../models/adAccount';
 import { getUserById, touchAccountsSyncedAt } from '../models/user';
+import { listTokens } from '../services/tokenPool';
+import { isAccountRateLimit, isPermissionError, isRateLimitError } from '../services/fbRateLimit';
 
 export const accountsRouter = Router();
 accountsRouter.use(authMiddleware);
@@ -19,6 +21,50 @@ function fbErrorMessage(err: any): string {
 function isCacheFresh(syncedAt: string | null | undefined): boolean {
   if (!syncedAt) return false;
   return Date.now() - new Date(syncedAt).getTime() < ACCOUNTS_CACHE_TTL_MS;
+}
+
+function shouldTryNextToken(err: any): boolean {
+  return isRateLimitError(err) || isAccountRateLimit(err) || isPermissionError(err);
+}
+
+/** 轮换 Token 拉取广告账户列表 */
+async function fetchAdAccountsRotating(primaryToken: string): Promise<any[]> {
+  const fbClient = FacebookClient.getInstance();
+  const now = new Date().toISOString();
+  const tried = new Set<string>();
+
+  async function tryToken(token: string): Promise<any[]> {
+    if (tried.has(token)) throw new Error('token already tried');
+    tried.add(token);
+    return fbClient.getAdAccounts(token);
+  }
+
+  try {
+    return await tryToken(primaryToken);
+  } catch (firstErr: any) {
+    if (!shouldTryNextToken(firstErr)) throw firstErr;
+
+    const pool = await listTokens();
+    const candidates = pool.filter(
+      (t) =>
+        t.status === 'active' &&
+        t.access_token !== primaryToken &&
+        (!t.expires_at || t.expires_at > now) &&
+        (!t.cooldown_until || t.cooldown_until < now)
+    );
+
+    let lastErr = firstErr;
+    for (const t of candidates) {
+      try {
+        console.log(`[Accounts] Retrying me/adaccounts with token: ${t.name}`);
+        return await tryToken(t.access_token);
+      } catch (err: any) {
+        lastErr = err;
+        if (!shouldTryNextToken(err)) throw err;
+      }
+    }
+    throw lastErr;
+  }
 }
 
 /** Filter accounts by user's allowed_accounts permission */
@@ -47,15 +93,20 @@ accountsRouter.get('/', async (req: AuthRequest, res: Response) => {
   const cached = await getCachedAccountsForUser(req.userId!);
   const cacheFresh = isCacheFresh(user?.accounts_synced_at);
 
-  if (!forceRefresh && cached.length > 0 && cacheFresh) {
+  // 非主动刷新：有缓存就直接用，避免每次打开页面都打 me/adaccounts
+  if (!forceRefresh && cached.length > 0) {
     const filtered = filterByPermission(cached, req.userRole!, req.userAllowedAccounts!);
-    res.json({ data: filtered, source: 'cache', total: filtered.length });
+    res.json({
+      data: filtered,
+      source: 'cache',
+      total: filtered.length,
+      stale: !cacheFresh,
+    });
     return;
   }
 
   try {
-    const fbClient = FacebookClient.getInstance();
-    const accounts = await fbClient.getAdAccounts(req.accessToken!);
+    const accounts = await fetchAdAccountsRotating(req.accessToken!);
     await upsertAccountsForUser(req.userId!, accounts);
     await touchAccountsSyncedAt(req.userId!);
     console.log(`[Accounts] User ${req.userId} synced ${accounts.length} ad accounts from Facebook`);
@@ -66,12 +117,15 @@ accountsRouter.get('/', async (req: AuthRequest, res: Response) => {
 
     const filtered = filterByPermission(cached, req.userRole!, req.userAllowedAccounts!);
     if (filtered.length > 0) {
+      const isLimited = isRateLimitError(err) || isAccountRateLimit(err);
       res.json({
         data: filtered,
         source: 'cache',
         stale: true,
         total: filtered.length,
-        warning: `Facebook API 限流，仅显示已缓存的 ${filtered.length} 个账户。请稍后点击刷新账户重试。`,
+        warning: isLimited
+          ? `Facebook API 暂时限流，已显示本地缓存的 ${filtered.length} 个账户。请 10 分钟后再点「刷新账户」。`
+          : `无法连接 Facebook，已显示本地缓存的 ${filtered.length} 个账户。`,
       });
       return;
     }

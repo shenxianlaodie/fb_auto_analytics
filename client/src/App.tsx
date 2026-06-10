@@ -12,6 +12,7 @@ import { BatchPublish } from './pages/BatchPublish';
 import { ShopMapping } from './pages/ShopMapping';
 import { ShopTokens } from './pages/ShopTokens';
 import { CrossAccountSummary } from './pages/CrossAccountSummary';
+import { SpuTopBoard } from './pages/SpuTopBoard';
 import { TokenPool } from './pages/TokenPool';
 import { ConnectFacebook } from './pages/ConnectFacebook';
 import { UserManagement } from './pages/UserManagement';
@@ -42,6 +43,7 @@ function AppRoutes() {
         <Route index element={<Dashboard />} />
         <Route path="ads" element={<AdsManager />} />
         <Route path="cross-account" element={<CrossAccountSummary />} />
+        <Route path="spu-top" element={<SpuTopBoard />} />
         <Route path="batch" element={<BatchPublish />} />
         <Route path="shop-mapping" element={<ShopMapping />} />
         <Route path="shop-tokens" element={<ShopTokens />} />

@@ -2,19 +2,8 @@ import { FacebookClient } from './facebookClient';
 import { deleteMultiDayFbAds, upsertFbAd } from '../models/fbAd';
 import { getFbAdsMeta, getFbAdsets } from '../models/fbStructure';
 import { touchSyncState } from '../models/syncState';
-import { StructureSyncService } from './structureSyncService';
 
-/** 投放状态刷新的内存 TTL：避免每次 metrics（热账户 2min）都全量拉 status */
-const STATUS_REFRESH_TTL_MS = 5 * 60 * 1000;
-const lastStatusSyncAt = new Map<string, number>();
-
-function isStatusStale(accountId: string): boolean {
-  const last = lastStatusSyncAt.get(accountId);
-  if (!last) return true;
-  return Date.now() - last > STATUS_REFRESH_TTL_MS;
-}
-
-/** 仅 1 次 FB insights(ad) 调用，写入 fb_ads 指标 */
+/** 仅 1 次 FB insights(ad) 调用，写入 fb_ads 指标；状态/预算由结构同步负责 */
 export class MetricsSyncService {
   private fbClient: FacebookClient;
   private accessToken: string;
@@ -36,28 +25,12 @@ export class MetricsSyncService {
       console.log(`[MetricsSync] account=${cleanId} removed ${removed} legacy multi-day rows`);
     }
 
-    // status 刷新成本高（3+ 次分页），按 TTL 降频，不随每次 metrics 全量拉
-    const shouldSyncStatus = isStatusStale(cleanId);
-    const statusSync = new StructureSyncService(this.accessToken);
-
-    const [insightRows] = await Promise.all([
-      this.fbClient.getInsights(cleanId, this.accessToken, {
-        level: 'ad',
-        time_range: { since: dateStart, until: dateEnd },
-        time_increment: 'all_days',
-        limit: 500,
-      }),
-      shouldSyncStatus
-        ? statusSync
-            .syncDeliveryStatus(accountId)
-            .then(() => {
-              lastStatusSyncAt.set(cleanId, Date.now());
-            })
-            .catch((err: any) => {
-              console.warn(`[MetricsSync] status 刷新失败 account=${cleanId}:`, err.message);
-            })
-        : Promise.resolve(),
-    ]);
+    const insightRows = await this.fbClient.getInsights(cleanId, this.accessToken, {
+      level: 'ad',
+      time_range: { since: dateStart, until: dateEnd },
+      time_increment: 'all_days',
+      limit: 500,
+    });
 
     const [metaList, adsetList] = await Promise.all([
       getFbAdsMeta(cleanId),
@@ -95,9 +68,7 @@ export class MetricsSyncService {
     }
 
     await touchSyncState(cleanId, 'metrics', dateStart, dateEnd);
-    console.log(
-      `[MetricsSync] account=${cleanId} synced=${synced} (insights${shouldSyncStatus ? ' + status' : ''})`
-    );
+    console.log(`[MetricsSync] account=${cleanId} synced=${synced} (insights only)`);
     return { synced };
   }
 }

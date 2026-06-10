@@ -104,6 +104,28 @@ function renderStatusTag(status: string, level: 'campaign' | 'adset' | 'ad' = 'a
   );
 }
 
+function ownStatusOf(record: { ownStatus?: string | null; status: string }): string {
+  return record.ownStatus ?? record.status;
+}
+
+function renderDeliveryStatusCell(
+  record: { status: string; statusHints?: string[] },
+  level: 'campaign' | 'adset' | 'ad' = 'ad',
+) {
+  return (
+    <div>
+      {renderStatusTag(record.status, level)}
+      {record.statusHints?.map((hint) => (
+        <div key={hint}>
+          <Typography.Text type="warning" style={{ fontSize: 11, lineHeight: '16px' }}>
+            {hint}
+          </Typography.Text>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function filterHierarchy(
   campaigns: any[],
   adsets: FBAdSet[],
@@ -322,10 +344,30 @@ export const AdsManager: React.FC = () => {
   const refresh = async () => {
     setLoading(true);
     try {
-      await loadHierarchy();
-      message.success('已从数据库重新加载');
+      const { dateStart, dateEnd } = getDateRange();
+      // 强制触发后端从 Facebook 拉取最新花费/预算/状态
+      const resp = await api.post('/analytics/refresh', {
+        accountId, accountName, dateStart, dateEnd, force: true,
+      });
+      applyHierarchy(resp.data);
+      message.info('正在从 Facebook 拉取最新数据...');
+
+      // 轮询读库直到后台同步完成（最多约 30 秒）
+      let done = false;
+      for (let i = 0; i < 6; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        const poll = await api.get('/analytics/hierarchy', {
+          params: { accountId, accountName, dateStart, dateEnd },
+        });
+        applyHierarchy(poll.data);
+        if (!poll.data?.meta?.refreshing) {
+          done = true;
+          break;
+        }
+      }
+      message.success(done ? '已更新为 Facebook 最新数据' : '同步仍在进行，稍后自动更新');
     } catch (err: any) {
-      message.warning(err.response?.data?.error || '加载失败');
+      message.warning(err.response?.data?.error || '刷新失败');
     }
     setLoading(false);
   };
@@ -427,11 +469,11 @@ export const AdsManager: React.FC = () => {
     setEditingId(record.id);
     form.resetFields();
     if (type === 'campaign') {
-      form.setFieldsValue({ name: record.name, objective: record.objective, status: record.status });
+      form.setFieldsValue({ name: record.name, objective: record.objective, status: ownStatusOf(record) });
     } else if (type === 'adset') {
-      form.setFieldsValue({ name: record.name, status: record.status });
+      form.setFieldsValue({ name: record.name, status: ownStatusOf(record) });
     } else {
-      form.setFieldsValue({ name: record.name, status: record.status });
+      form.setFieldsValue({ name: record.name, status: ownStatusOf(record) });
     }
     setModalOpen(true);
   };
@@ -443,9 +485,9 @@ export const AdsManager: React.FC = () => {
       sorter: (a, b) => cmpStr(a.name, b.name),
     },
     {
-      title: '投放状态', dataIndex: 'status', key: 'status', width: 90,
+      title: '投放状态', dataIndex: 'status', key: 'status', width: 110,
       sorter: (a, b) => cmpStr(a.status, b.status),
-      render: (s: string) => renderStatusTag(s, 'campaign'),
+      render: (_: string, record: any) => renderDeliveryStatusCell(record, 'campaign'),
     },
     {
       title: '预算', key: 'budget', width: 100,
@@ -589,8 +631,8 @@ export const AdsManager: React.FC = () => {
             onClick={() => handleEdit('campaign', record)}>编辑</Button>
           <Switch
             size="small"
-            checked={record.status === 'ACTIVE'}
-            onChange={() => handleToggleStatus('campaign', record.id, record.status)}
+            checked={ownStatusOf(record) === 'ACTIVE'}
+            onChange={() => handleToggleStatus('campaign', record.id, ownStatusOf(record))}
             checkedChildren="开" unCheckedChildren="关"
           />
         </Space>
@@ -805,9 +847,9 @@ function AdSetSubTable({
       sorter: (a, b) => cmpStr(a.name, b.name),
     },
     {
-      title: '投放状态', dataIndex: 'status', key: 'status', width: 90,
+      title: '投放状态', dataIndex: 'status', key: 'status', width: 110,
       sorter: (a, b) => cmpStr(a.status, b.status),
-      render: (s: string) => renderStatusTag(s, 'adset'),
+      render: (_: string, record: any) => renderDeliveryStatusCell(record, 'adset'),
     },
     {
       title: '日预算', key: 'budget', width: 100,
@@ -945,8 +987,8 @@ function AdSetSubTable({
             onClick={() => onEdit('adset', record)}>编辑</Button>
           <Switch
             size="small"
-            checked={record.status === 'ACTIVE'}
-            onChange={() => onToggleStatus('adset', record.id, record.status)}
+            checked={ownStatusOf(record) === 'ACTIVE'}
+            onChange={() => onToggleStatus('adset', record.id, ownStatusOf(record))}
             checkedChildren="开" unCheckedChildren="关"
           />
         </Space>
@@ -1027,9 +1069,9 @@ function AdSubTable({
       render: (v: string | null) => v || '-',
     },
     {
-      title: '投放状态', dataIndex: 'status', key: 'status', width: 90,
+      title: '投放状态', dataIndex: 'status', key: 'status', width: 110,
       sorter: (a, b) => cmpStr(a.status, b.status),
-      render: (s: string) => renderStatusTag(s, 'ad'),
+      render: (_: string, record: any) => renderDeliveryStatusCell(record, 'ad'),
     },
     {
       title: '已花费', key: 'spend', width: 90,
@@ -1102,8 +1144,8 @@ function AdSubTable({
             onClick={() => onEdit('ad', record)}>编辑</Button>
           <Switch
             size="small"
-            checked={record.status === 'ACTIVE'}
-            onChange={() => onToggleStatus('ad', record.id, record.status)}
+            checked={ownStatusOf(record) === 'ACTIVE'}
+            onChange={() => onToggleStatus('ad', record.id, ownStatusOf(record))}
             checkedChildren="开" unCheckedChildren="关"
           />
         </Space>

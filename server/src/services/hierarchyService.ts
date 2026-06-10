@@ -10,11 +10,44 @@ interface RollupMetrics {
   count: number;
 }
 
+function isDeliveryActive(status: string | null | undefined): boolean {
+  return status === 'ACTIVE';
+}
+
 /** 子级有一个 ACTIVE → ACTIVE；全部非 ACTIVE → PAUSED */
 function rollupDeliveryStatus(statuses: Array<string | null | undefined>): string {
   const list = statuses.filter((s): s is string => !!s);
   if (list.length === 0) return 'PAUSED';
   return list.some((s) => s === 'ACTIVE') ? 'ACTIVE' : 'PAUSED';
+}
+
+/** 本级非 ACTIVE 时优先显示本级状态，否则按子级 rollup */
+function resolveDisplayStatus(
+  ownStatus: string | null | undefined,
+  childStatuses: Array<string | null | undefined>
+): string {
+  if (ownStatus && !isDeliveryActive(ownStatus)) {
+    return ownStatus;
+  }
+  return rollupDeliveryStatus(childStatuses);
+}
+
+function campaignClosedHint(campaignOwnStatus: string | null | undefined): string[] {
+  return campaignOwnStatus && !isDeliveryActive(campaignOwnStatus) ? ['广告系列已关闭'] : [];
+}
+
+function adParentClosedHints(
+  campaignOwnStatus: string | null | undefined,
+  adsetOwnStatus: string | null | undefined
+): string[] {
+  const hints: string[] = [];
+  if (campaignOwnStatus && !isDeliveryActive(campaignOwnStatus)) {
+    hints.push('广告系列已关闭');
+  }
+  if (adsetOwnStatus && !isDeliveryActive(adsetOwnStatus)) {
+    hints.push('广告组已关闭');
+  }
+  return hints;
 }
 
 function findUtmCampaignForAd(
@@ -148,6 +181,13 @@ export class HierarchyService {
     const adsWithSpend = ads.filter((a) => Number(a.spend) > 0);
     const totalSpend = adsWithSpend.reduce((s, a) => s + Number(a.spend), 0);
 
+    const campaignOwnStatusById = new Map(
+      campaigns.map((c) => [c.campaign_id, c.status])
+    );
+    const adsetOwnStatusById = new Map(
+      adsets.map((a) => [a.adset_id, a.status])
+    );
+
     const adsByAdset = new Map<string, typeof ads>();
     const adsByCampaign = new Map<string, typeof ads>();
     for (const ad of ads) {
@@ -164,11 +204,16 @@ export class HierarchyService {
     const adsetRows = adsets.map((a) => {
       const childAds = adsByAdset.get(a.adset_id) || [];
       const rollup = rollupFromAds(childAds);
+      const ownStatus = a.status;
       return {
         id: a.adset_id,
         name: a.name || a.adset_id,
         campaignId: a.campaign_id,
-        status: rollupDeliveryStatus(childAds.map((ad) => ad.status)),
+        ownStatus,
+        status: resolveDisplayStatus(ownStatus, childAds.map((ad) => ad.status)),
+        statusHints: a.campaign_id
+          ? campaignClosedHint(campaignOwnStatusById.get(a.campaign_id))
+          : [],
         daily_budget: a.daily_budget,
         lifetime_budget: a.lifetime_budget,
         spend: rollup.spend,
@@ -182,11 +227,14 @@ export class HierarchyService {
     for (const [adsetId, childAds] of adsByAdset) {
       if (knownAdsetIds.has(adsetId)) continue;
       const rollup = rollupFromAds(childAds);
+      const campaignId = childAds.find((ad) => ad.campaignId)?.campaignId ?? null;
       syntheticAdsets.push({
         id: adsetId,
         name: childAds[0]?.name ? `${childAds[0].name}（组）` : `广告组 ${String(adsetId).slice(-8)}`,
-        campaignId: childAds.find((ad) => ad.campaignId)?.campaignId ?? null,
-        status: rollupDeliveryStatus(childAds.map((ad) => ad.status)),
+        campaignId,
+        ownStatus: adsetOwnStatusById.get(adsetId) ?? null,
+        status: resolveDisplayStatus(adsetOwnStatusById.get(adsetId), childAds.map((ad) => ad.status)),
+        statusHints: campaignClosedHint(campaignId ? campaignOwnStatusById.get(campaignId) : null),
         daily_budget: null,
         lifetime_budget: null,
         spend: rollup.spend,
@@ -205,11 +253,13 @@ export class HierarchyService {
       const childAdsetStatuses = allAdsetRows
         .filter((a) => a.campaignId === c.campaign_id)
         .map((a) => adsetStatusById.get(a.id) || 'PAUSED');
+      const ownStatus = c.status;
       return {
         id: c.campaign_id,
         name: c.name || c.campaign_id,
         objective: c.objective,
-        status: rollupDeliveryStatus(childAdsetStatuses),
+        ownStatus,
+        status: resolveDisplayStatus(ownStatus, childAdsetStatuses),
         daily_budget: c.daily_budget,
         lifetime_budget: c.lifetime_budget,
         spend: rollup.spend,
@@ -217,10 +267,19 @@ export class HierarchyService {
       };
     });
 
+    const adsWithHints = ads.map((ad) => ({
+      ...ad,
+      ownStatus: ad.status,
+      statusHints: adParentClosedHints(
+        ad.campaignId ? campaignOwnStatusById.get(ad.campaignId) : null,
+        ad.adsetId ? adsetOwnStatusById.get(ad.adsetId) : null
+      ),
+    }));
+
     return {
       campaigns: campaignRows,
       adsets: allAdsetRows,
-      ads,
+      ads: adsWithHints,
       meta: {
         ...syncMeta,
         dateStart,

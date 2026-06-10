@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { AdService } from '../services/adService';
+import { writeBackAd } from '../models/fbStructure';
 
 export const adsRouter = Router();
 adsRouter.use(authMiddleware);
@@ -53,6 +54,8 @@ adsRouter.put('/:id', async (req: AuthRequest, res: Response) => {
     const { name, status } = req.body;
     const service = new AdService(req.accessToken!);
     const result = await service.updateAd(req.params.id, { name, status });
+    // FB 更新成功后立即写回本地库，前端无需等下一轮同步
+    await writeBackAd(req.params.id, { status });
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

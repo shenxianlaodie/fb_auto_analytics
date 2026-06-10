@@ -1,10 +1,13 @@
+process.env.SYNC_WORKER = '1';
+
 import cron from 'node-cron';
 import { initDatabase } from './models/database';
 import {
   runMetricsCron,
   runShoplazzaCron,
-  runStructureCron,
 } from './services/syncSchedulerService';
+import { runSpuTopCron } from './services/spuTopSyncService';
+import { runHistoryBackfillCron } from './services/historyBackfillService';
 
 async function start() {
   await initDatabase();
@@ -19,25 +22,34 @@ async function start() {
     }
   });
 
-  // FB 指标：每 15 分钟
+  // FB 指标 + 结构：每 15 分钟（合并调度，避免重复扫账户）
   cron.schedule('*/15 * * * *', async () => {
     try {
       await runMetricsCron();
     } catch (err: any) {
-      console.error('[SyncWorker] Metrics sync failed:', err.message);
+      console.error('[SyncWorker] Metrics/Structure sync failed:', err.message);
     }
   });
 
-  // FB 结构：每 6 小时
-  cron.schedule('15 */6 * * *', async () => {
+  // SPU TOP 榜：每 15 分钟
+  cron.schedule('*/15 * * * *', async () => {
     try {
-      await runStructureCron();
+      await runSpuTopCron();
     } catch (err: any) {
-      console.error('[SyncWorker] Structure sync failed:', err.message);
+      console.error('[SyncWorker] SPU TOP sync failed:', err.message);
     }
   });
 
-  console.log('[SyncWorker] Running: Shoplazza 5min / Metrics 15min / Structure 6h');
+  // 历史指标回填：每日凌晨 3:30 低峰期（过去 30 天按天落库）
+  cron.schedule('30 3 * * *', async () => {
+    try {
+      await runHistoryBackfillCron();
+    } catch (err: any) {
+      console.error('[SyncWorker] History backfill failed:', err.message);
+    }
+  });
+
+  console.log('[SyncWorker] Running: Shoplazza 5min / Metrics+Structure 15min / SpuTop 15min / HistoryBackfill 03:30');
 }
 
 start().catch((err) => {

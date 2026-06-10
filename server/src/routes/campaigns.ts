@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { CampaignService } from '../services/campaignService';
+import { writeBackCampaign } from '../models/fbStructure';
 
 export const campaignsRouter = Router();
 campaignsRouter.use(authMiddleware);
@@ -52,9 +53,14 @@ campaignsRouter.post('/', async (req: AuthRequest, res: Response) => {
 // PUT /api/campaigns/:id
 campaignsRouter.put('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    const { name, status } = req.body;
+    const { name, status, budget } = req.body;
     const service = new CampaignService(req.accessToken!);
-    const result = await service.updateCampaign(req.params.id, { name, status });
+    const result = await service.updateCampaign(req.params.id, { name, status, budget });
+    // FB 更新成功后立即写回本地库，前端无需等下一轮同步
+    await writeBackCampaign(req.params.id, {
+      status,
+      dailyBudgetCents: budget?.daily,
+    });
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
