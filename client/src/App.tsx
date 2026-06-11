@@ -8,6 +8,7 @@ import { Login } from './pages/Login';
 import { AuthCallback } from './pages/AuthCallback';
 import { Dashboard } from './pages/Dashboard';
 import { AdsManager } from './pages/AdsManager';
+import { AdCreate } from './pages/AdCreate';
 import { BatchPublish } from './pages/BatchPublish';
 import { ShopMapping } from './pages/ShopMapping';
 import { ShopTokens } from './pages/ShopTokens';
@@ -42,6 +43,7 @@ function AppRoutes() {
       >
         <Route index element={<Dashboard />} />
         <Route path="ads" element={<AdsManager />} />
+        <Route path="ads/create" element={<AdCreate />} />
         <Route path="cross-account" element={<CrossAccountSummary />} />
         <Route path="spu-top" element={<SpuTopBoard />} />
         <Route path="batch" element={<BatchPublish />} />
