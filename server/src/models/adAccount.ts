@@ -22,6 +22,32 @@ function toFbAccount(row: {
   };
 }
 
+/** 全库账户目录（各用户同步结果的并集，取每个 account_id 最新一条） */
+export async function getGlobalAccountCatalog(): Promise<any[]> {
+  const rows = await query(
+    `SELECT DISTINCT ON (account_id) account_id, account_name, currency, timezone, is_active
+     FROM ad_accounts
+     WHERE account_id IS NOT NULL
+     ORDER BY account_id, account_name`
+  );
+  return rows.map(toFbAccount);
+}
+
+/** Facebook 不可用时，将全库账户目录同步到指定用户 */
+export async function propagateGlobalAccountsToUser(userId: string): Promise<number> {
+  const catalog = await getGlobalAccountCatalog();
+  if (catalog.length === 0) return 0;
+  await upsertAccountsForUser(userId, catalog);
+  return catalog.length;
+}
+
+export async function getAllDistinctAccountIds(): Promise<string[]> {
+  const rows = await query(
+    `SELECT DISTINCT account_id FROM ad_accounts WHERE account_id IS NOT NULL ORDER BY account_id`
+  );
+  return rows.map((r) => normalizeAccountId(String(r.account_id)));
+}
+
 export async function getCachedAccountsForUser(userId: string): Promise<any[]> {
   const rows = await query(
     `SELECT account_id, account_name, currency, timezone, is_active

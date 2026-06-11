@@ -306,6 +306,54 @@ export class FacebookClient {
     });
   }
 
+  /** Graph API batch GET，每批最多 50 个对象 */
+  async batchGetByIds(
+    accessToken: string,
+    items: Array<{ id: string; fields: string }>,
+    batchGapMs = 300
+  ): Promise<any[]> {
+    if (items.length === 0) return [];
+    const BATCH_SIZE = 50;
+    const results: any[] = [];
+
+    for (let i = 0; i < items.length; i += BATCH_SIZE) {
+      const chunk = items.slice(i, i + BATCH_SIZE);
+      const batch = chunk.map((item) => ({
+        method: 'GET',
+        relative_url: `${item.id}?fields=${encodeURIComponent(item.fields)}`,
+      }));
+
+      const resp = await getFbQueue().enqueue(async () => {
+        try {
+          const response = await this.axios.post(this.baseUrl, null, {
+            params: { access_token: accessToken, batch: JSON.stringify(batch) },
+          });
+          recordUsageHeaders(`batch/${chunk.length}`, response.headers);
+          return response.data as Array<{ code: number; body: string }>;
+        } catch (err: any) {
+          recordUsageHeaders(`batch/${chunk.length}`, err.response?.headers);
+          throw err;
+        }
+      });
+
+      for (const item of resp || []) {
+        if (item.code === 200 && item.body) {
+          try {
+            results.push(JSON.parse(item.body));
+          } catch {
+            // skip malformed batch entry
+          }
+        }
+      }
+
+      if (batchGapMs > 0 && i + BATCH_SIZE < items.length) {
+        await sleep(batchGapMs);
+      }
+    }
+
+    return results;
+  }
+
   async getAllAds(
     accountId: string,
     accessToken: string,
@@ -385,6 +433,28 @@ export class FacebookClient {
       if (!after || !resp.paging?.next) break;
     }
     return all;
+  }
+
+  /** 账户级当日花费（1 次轻量 insights 调用） */
+  async getAccountSpend(
+    accountId: string,
+    accessToken: string,
+    dateStart: string,
+    dateEnd: string
+  ): Promise<number> {
+    const cleanId = accountId.replace('act_', '');
+    const rows = await this.getInsights(cleanId, accessToken, {
+      level: 'account',
+      fields: 'spend',
+      time_range: { since: dateStart, until: dateEnd },
+      time_increment: 'all_days',
+      limit: 1,
+    });
+    let total = 0;
+    for (const row of rows) {
+      total += parseFloat(row.spend || '0');
+    }
+    return total;
   }
 
   // --- Ad Creatives ---
