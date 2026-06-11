@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, DatePicker, Input, Space, Table, Tabs, Tag, Typography, message,
+  Alert, Button, DatePicker, Dropdown, Input, Popconfirm, Space, Table, Tabs, Tag, Typography, message,
 } from 'antd';
-import { CloseOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { CloseOutlined, DeleteOutlined, FileTextOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
+import { useNavigate } from 'react-router-dom';
 import api from '../../services/api';
 import { useAccountStore } from '../../store/accountStore';
 import { useUIStore } from '../../store/uiStore';
@@ -30,7 +31,24 @@ const PUT_ENDPOINT: Record<Level, string> = {
 };
 
 export const AdsManager: React.FC = () => {
+  const navigate = useNavigate();
   const { accountId } = useAccountStore();
+  const [drafts, setDrafts] = useState<{ id: string; name: string; updated_at: string }[]>([]);
+
+  const loadDrafts = async () => {
+    if (!accountId) return;
+    try {
+      const resp = await api.get('/drafts', { params: { accountId } });
+      setDrafts(resp.data || []);
+    } catch {
+      // 草稿加载失败不阻塞页面
+    }
+  };
+
+  const removeDraft = async (id: string) => {
+    await api.delete(`/drafts/${id}`);
+    loadDrafts();
+  };
   const { dateRange, setDateRange } = useUIStore();
   const { activeTab, selected, setActiveTab, setSelected, clearSelected } = useAdsManagerStore();
   const columnOrders = useColumnOrderStore((s) => s.orders);
@@ -210,7 +228,7 @@ export const AdsManager: React.FC = () => {
       locale={{
         emptyText: level === 'campaign'
           ? <EmptyState title="暂无广告系列" description="点击右上角创建" actionText="创建"
-              onAction={() => setEditTarget({ level: 'campaign', record: null, parentId: null })} />
+              onAction={() => navigate('/ads/create')} />
           : '暂无数据',
       }}
       pagination={{ pageSize: 20, showSizeChanger: true }}
@@ -256,10 +274,34 @@ export const AdsManager: React.FC = () => {
           )}
           <Button icon={<ReloadOutlined />} onClick={refresh} loading={loading}>刷新</Button>
           <ColumnOrderSettings />
-          <Button type="primary" icon={<PlusOutlined />}
-            onClick={() => setEditTarget({ level: 'campaign', record: null, parentId: null })}>
-            创建广告系列
-          </Button>
+          <Dropdown.Button
+            type="primary"
+            icon={<FileTextOutlined />}
+            onClick={() => navigate('/ads/create')}
+            onOpenChange={(open) => { if (open) loadDrafts(); }}
+            menu={{
+              items: drafts.length === 0
+                ? [{ key: 'empty', label: '暂无草稿', disabled: true }]
+                : drafts.map((d) => ({
+                    key: d.id,
+                    label: (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 220 }}
+                        onClick={() => navigate(`/ads/create?draftId=${d.id}`)}>
+                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.name}</span>
+                        <span style={{ fontSize: 11, color: '#999' }}>
+                          {new Date(d.updated_at).toLocaleDateString()}
+                        </span>
+                        <Popconfirm title="删除该草稿？"
+                          onConfirm={(e) => { e?.stopPropagation(); removeDraft(d.id); }}>
+                          <DeleteOutlined onClick={(e) => e.stopPropagation()} style={{ color: '#ff4d4f' }} />
+                        </Popconfirm>
+                      </div>
+                    ),
+                  })),
+            }}
+          >
+            <PlusOutlined /> 创建广告
+          </Dropdown.Button>
         </Space>
       </div>
 
