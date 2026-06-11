@@ -75,6 +75,10 @@ export const AdsManager: React.FC = () => {
     return filtered.ads;
   }, [filtered.ads, selAdsets, selCampaigns]);
 
+  const dataOfTab: Record<Level, any[]> = { campaign: tabCampaigns, adset: tabAdsets, ad: tabAds };
+  const recordsOfSelected = (level: Level) =>
+    dataOfTab[level].filter((r) => selected[level].includes(r.id));
+
   // --- 操作 ---
   const handleToggleStatus = async (level: Level, id: string, current: string) => {
     const newStatus = current === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
@@ -110,7 +114,7 @@ export const AdsManager: React.FC = () => {
   };
 
   const handleBulkStatus = async (status: 'ACTIVE' | 'PAUSED') => {
-    const ids = selected[activeTab];
+    const ids = recordsOfSelected(activeTab).map((r: any) => r.id);
     if (!ids.length) return;
     setBulkLoading(true);
     try {
@@ -186,10 +190,6 @@ export const AdsManager: React.FC = () => {
     () => applyColumnOrder(buildAdColumns(columnsCtx), columnOrders.ad),
     [filtered.ads, editingBudget, columnOrders.ad],
   );
-
-  const dataOfTab: Record<Level, any[]> = { campaign: tabCampaigns, adset: tabAdsets, ad: tabAds };
-  const recordsOfSelected = (level: Level) =>
-    dataOfTab[level].filter((r) => selected[level].includes(r.id));
 
   const renderTable = (level: Level, columns: any[], data: any[]) => (
     <Table
@@ -319,7 +319,7 @@ export const AdsManager: React.FC = () => {
       )}
 
       <BulkActionBar
-        count={selected[activeTab].length}
+        count={recordsOfSelected(activeTab).length}
         loading={bulkLoading}
         onEnable={() => handleBulkStatus('ACTIVE')}
         onPause={() => handleBulkStatus('PAUSED')}

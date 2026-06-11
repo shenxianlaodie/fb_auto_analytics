@@ -32,6 +32,7 @@ export function useHierarchy() {
   const [syncMeta, setSyncMeta] = useState<SyncMeta | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const requestIdRef = useRef(0);
+  const loadingOwnerRef = useRef(0);
 
   const applyHierarchy = (data: any) => {
     setCampaigns(data.campaigns || []);
@@ -42,7 +43,7 @@ export function useHierarchy() {
 
   const loadHierarchy = useCallback(async () => {
     if (!accountId) return;
-    const reqId = ++requestIdRef.current;
+    const reqId = requestIdRef.current;
     const resp = await api.get('/analytics/hierarchy', {
       params: { accountId, accountName, dateStart: dateRange[0], dateEnd: dateRange[1] },
     });
@@ -53,14 +54,17 @@ export function useHierarchy() {
 
   /** 静默读库（创建/编辑/复制成功后调用） */
   const reload = useCallback(async () => {
-    ++requestIdRef.current;
+    const reqId = ++requestIdRef.current;
     setLoading(true);
+    loadingOwnerRef.current = reqId;
     try {
       await loadHierarchy();
     } catch (err: any) {
       message.warning(err.response?.data?.error || '加载数据失败');
     }
-    setLoading(false);
+    if (loadingOwnerRef.current === reqId) {
+      setLoading(false);
+    }
   }, [loadHierarchy]);
 
   // 账户/日期变化时清空重载
@@ -102,6 +106,7 @@ export function useHierarchy() {
   const refresh = useCallback(async () => {
     const reqId = ++requestIdRef.current;
     setLoading(true);
+    loadingOwnerRef.current = reqId;
     try {
       const resp = await api.post('/analytics/refresh', {
         accountId, accountName, dateStart: dateRange[0], dateEnd: dateRange[1], force: true,
@@ -132,9 +137,10 @@ export function useHierarchy() {
       if (reqId === requestIdRef.current) {
         message.warning(err.response?.data?.error || '刷新失败');
       }
-    }
-    if (reqId === requestIdRef.current) {
-      setLoading(false);
+    } finally {
+      if (loadingOwnerRef.current === reqId) {
+        setLoading(false);
+      }
     }
   }, [accountId, accountName, dateRange]);
 
