@@ -1338,6 +1338,12 @@ git commit -m "feat(client): 广告管理编辑弹窗与复制弹窗组件"
 
 ### Task 7: 前端 — index.tsx 装配 + 删除旧文件
 
+**代码审查补充要求（必须随本任务一并实现）：**
+
+1. `useHierarchy.ts` 加过期响应守卫：组件内用 `requestIdRef = useRef(0)`，每次 `loadHierarchy`/`reload`/`refresh` 开始时 `const reqId = ++requestIdRef.current`，仅当 `reqId === requestIdRef.current` 时才 `applyHierarchy`，避免切账户/日期后被在途旧响应覆盖；`refresh` 的 30 秒轮询循环中每轮同样检查，过期立即 break。
+2. `NameCell.tsx` 的 `onPressEnter` async 处理增加空 `catch`（错误提示由调用方负责），避免未处理 Promise 拒绝。
+3. `index.tsx` 中账户切换时清空勾选：`useEffect(() => { clearSelected(); }, [accountId])`。
+
 **Files:**
 - Create: `client/src/pages/AdsManager/index.tsx`
 - Delete: `client/src/pages/AdsManager.tsx`

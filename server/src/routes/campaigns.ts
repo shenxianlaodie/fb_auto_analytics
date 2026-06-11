@@ -1,7 +1,7 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { CampaignService } from '../services/campaignService';
-import { writeBackCampaign } from '../models/fbStructure';
+import { upsertFbCampaign, writeBackCampaign } from '../models/fbStructure';
 import { FacebookClient } from '../services/facebookClient';
 import { fbErrorMessage } from '../utils/fbError';
 
@@ -39,6 +39,10 @@ campaignsRouter.get('/:id', async (req: AuthRequest, res: Response) => {
 campaignsRouter.post('/', async (req: AuthRequest, res: Response) => {
   try {
     const { accountId, name, objective, status, specialAdCategories } = req.body;
+    if (!accountId || !name || !objective) {
+      res.status(400).json({ error: '缺少 accountId、名称或广告目标' });
+      return;
+    }
     const service = new CampaignService(req.accessToken!);
     const result = await service.createCampaign(accountId, {
       name,
@@ -46,9 +50,19 @@ campaignsRouter.post('/', async (req: AuthRequest, res: Response) => {
       status: status || 'PAUSED',
       specialAdCategories: specialAdCategories || [],
     });
+    const acctId = String(accountId).replace(/^act_/, '');
+    await upsertFbCampaign({
+      adAccountId: acctId,
+      campaignId: result.id,
+      name,
+      status: status || 'PAUSED',
+      objective,
+      dailyBudget: null,
+      lifetimeBudget: null,
+    });
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: fbErrorMessage(err) });
   }
 });
 

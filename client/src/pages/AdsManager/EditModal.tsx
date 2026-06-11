@@ -97,7 +97,7 @@ export function EditModal({
       onDone();
     } catch (err: any) {
       if (err?.errorFields) return;
-      message.error(err?.response?.data?.error || '操作失败');
+      message.error(err?.response?.data?.error || err?.message || '操作失败');
     } finally {
       setSubmitting(false);
     }
