@@ -33,6 +33,8 @@ export function NameCell({
           setSaving(true);
           try {
             await onRename(v);
+          } catch {
+            // 错误提示由调用方负责
           } finally {
             setSaving(false);
             setEditing(false);

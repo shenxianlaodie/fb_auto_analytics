@@ -31,6 +31,7 @@ export function useHierarchy() {
   const [loading, setLoading] = useState(false);
   const [syncMeta, setSyncMeta] = useState<SyncMeta | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const requestIdRef = useRef(0);
 
   const applyHierarchy = (data: any) => {
     setCampaigns(data.campaigns || []);
@@ -41,14 +42,18 @@ export function useHierarchy() {
 
   const loadHierarchy = useCallback(async () => {
     if (!accountId) return;
+    const reqId = ++requestIdRef.current;
     const resp = await api.get('/analytics/hierarchy', {
       params: { accountId, accountName, dateStart: dateRange[0], dateEnd: dateRange[1] },
     });
-    applyHierarchy(resp.data);
+    if (reqId === requestIdRef.current) {
+      applyHierarchy(resp.data);
+    }
   }, [accountId, accountName, dateRange]);
 
   /** 静默读库（创建/编辑/复制成功后调用） */
   const reload = useCallback(async () => {
+    ++requestIdRef.current;
     setLoading(true);
     try {
       await loadHierarchy();
@@ -95,32 +100,43 @@ export function useHierarchy() {
 
   /** 强制触发后端 FB 同步并轮询直到完成（最多约 30 秒） */
   const refresh = useCallback(async () => {
+    const reqId = ++requestIdRef.current;
     setLoading(true);
     try {
       const resp = await api.post('/analytics/refresh', {
         accountId, accountName, dateStart: dateRange[0], dateEnd: dateRange[1], force: true,
       });
-      applyHierarchy(resp.data);
+      if (reqId === requestIdRef.current) {
+        applyHierarchy(resp.data);
+      }
       message.info('正在从 Facebook 拉取最新数据...');
 
       let done = false;
       for (let i = 0; i < 6; i++) {
         await new Promise((r) => setTimeout(r, 5000));
+        if (reqId !== requestIdRef.current) break;
         const poll = await api.get('/analytics/hierarchy', {
           params: { accountId, accountName, dateStart: dateRange[0], dateEnd: dateRange[1] },
         });
+        if (reqId !== requestIdRef.current) break;
         applyHierarchy(poll.data);
         if (!poll.data?.meta?.refreshing) {
           done = true;
           break;
         }
       }
-      message.success(done ? '已更新为 Facebook 最新数据' : '同步仍在进行，稍后自动更新');
+      if (reqId === requestIdRef.current) {
+        message.success(done ? '已更新为 Facebook 最新数据' : '同步仍在进行，稍后自动更新');
+      }
     } catch (err: any) {
-      message.warning(err.response?.data?.error || '刷新失败');
+      if (reqId === requestIdRef.current) {
+        message.warning(err.response?.data?.error || '刷新失败');
+      }
     }
-    setLoading(false);
-  }, [accountId, accountName, dateRange, loadHierarchy]);
+    if (reqId === requestIdRef.current) {
+      setLoading(false);
+    }
+  }, [accountId, accountName, dateRange]);
 
   return { campaigns, adsets, ads, loading, syncMeta, reload, refresh };
 }
