@@ -21,6 +21,7 @@ import { analyticsRouter } from './routes/analytics';
 import { bulkRouter } from './routes/bulk';
 import { draftsRouter } from './routes/drafts';
 import { metaRouter } from './routes/meta';
+import { publishRouter } from './routes/publish';
 import { usersRouter } from './routes/users';
 import { tokensRouter, handleConnectCallback } from './routes/tokens';
 
@@ -48,6 +49,7 @@ app.use('/api/analytics', analyticsRouter);
 app.use('/api/bulk', bulkRouter);
 app.use('/api/drafts', draftsRouter);
 app.use('/api/meta', metaRouter);
+app.use('/api/publish', publishRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/tokens', tokensRouter);
 
