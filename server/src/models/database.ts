@@ -321,6 +321,9 @@ export async function initDatabase(): Promise<Pool> {
     await client.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sync_priority BOOLEAN DEFAULT false`);
     await client.query(`ALTER TABLE shoplazza_spu_top ADD COLUMN IF NOT EXISTS product_created_at TEXT`);
     await client.query(`ALTER TABLE shoplazza_spu_top ADD COLUMN IF NOT EXISTS composite_score NUMERIC(12,4) DEFAULT 0`);
+    await client.query(`ALTER TABLE shoplazza_spu_top ADD COLUMN IF NOT EXISTS range_start TEXT`);
+    await client.query(`ALTER TABLE shoplazza_spu_top ADD COLUMN IF NOT EXISTS range_end TEXT`);
+    await client.query(`ALTER TABLE shoplazza_spu_top ADD COLUMN IF NOT EXISTS price NUMERIC(10,2) DEFAULT 0`);
     await client.query(`
       CREATE TABLE IF NOT EXISTS ad_drafts (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
