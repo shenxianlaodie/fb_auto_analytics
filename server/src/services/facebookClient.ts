@@ -432,6 +432,26 @@ export class FacebookClient {
     return response.data?.id || '';
   }
 
+  // --- Pages & Pixels ---
+
+  /** 当前 Token 用户管理的 Facebook 主页 */
+  async getPages(accessToken: string): Promise<any[]> {
+    const resp = await this.get('me/accounts', accessToken, {
+      fields: 'id,name,picture{url}',
+      limit: 100,
+    });
+    return resp.data || [];
+  }
+
+  /** 广告账户下的像素列表 */
+  async getAdsPixels(accountId: string, accessToken: string): Promise<any[]> {
+    const resp = await this.get(`act_${accountId}/adspixels`, accessToken, {
+      fields: 'id,name',
+      limit: 100,
+    });
+    return resp.data || [];
+  }
+
   // --- Targeting Search ---
 
   async searchTargeting(accessToken: string, query: string, type: string = 'adinterest'): Promise<any[]> {
