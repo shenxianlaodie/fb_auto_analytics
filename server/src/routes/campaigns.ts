@@ -2,6 +2,8 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { CampaignService } from '../services/campaignService';
 import { writeBackCampaign } from '../models/fbStructure';
+import { FacebookClient } from '../services/facebookClient';
+import { fbErrorMessage } from '../utils/fbError';
 
 export const campaignsRouter = Router();
 campaignsRouter.use(authMiddleware);
@@ -75,5 +77,24 @@ campaignsRouter.delete('/:id', async (req: AuthRequest, res: Response) => {
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/campaigns/:id/copy — 复制广告系列（深复制，含子组/广告）
+campaignsRouter.post('/:id/copy', async (req: AuthRequest, res: Response) => {
+  try {
+    const { count = 1, statusOption = 'PAUSED' } = req.body;
+    const fb = FacebookClient.getInstance();
+    const copies: any[] = [];
+    for (let i = 0; i < Math.min(Number(count) || 1, 10); i++) {
+      const result = await fb.copyObject(req.params.id, req.accessToken!, {
+        deep_copy: true,
+        status_option: statusOption,
+      });
+      copies.push(result);
+    }
+    res.json({ success: true, copies });
+  } catch (err: any) {
+    res.status(500).json({ error: fbErrorMessage(err) });
   }
 });

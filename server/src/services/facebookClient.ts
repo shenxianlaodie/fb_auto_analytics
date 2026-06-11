@@ -339,6 +339,13 @@ export class FacebookClient {
     return this.post(adId, accessToken, { status: 'DELETED' });
   }
 
+  // --- Copies ---
+
+  /** FB 官方复制接口：POST /{object_id}/copies，campaign/adset/ad 通用 */
+  async copyObject(objectId: string, accessToken: string, params: Record<string, any>): Promise<any> {
+    return this.post(`${objectId}/copies`, accessToken, params);
+  }
+
   // --- Insights ---
 
   private static INSIGHT_FIELDS: Record<string, string> = {
