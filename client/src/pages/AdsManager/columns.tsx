@@ -5,7 +5,8 @@ import type { ColumnsType } from 'antd/es/table';
 import {
   UtmAggMetrics, aggregateAdsMetrics, adsForAdset, adsForCampaign,
   cmpNum, cmpStr, fmtCostPerCount, fmtCostPerOrder, fmtCostPerUv, fmtOrders, fmtRoas,
-  ownStatusOf, parseBudget, renderDeliveryStatusCell,
+  formatBudgetUsd, getBudgetKind, ownStatusOf, parseBudget, renderDeliveryStatusCell,
+  usdToCents, type BudgetKind,
 } from './helpers';
 import { NameCell } from './NameCell';
 import type { Level } from '../../store/adsManagerStore';
@@ -14,7 +15,7 @@ export interface ColumnsCtx {
   allAds: any[];
   editingBudget: { id: string; type: string } | null;
   setEditingBudget: (v: { id: string; type: string } | null) => void;
-  onUpdateBudget: (type: 'campaign' | 'adset', id: string, budgetCents: number) => void;
+  onUpdateBudget: (type: 'campaign' | 'adset', id: string, budgetCents: number, kind: BudgetKind) => void;
   onToggleStatus: (level: Level, id: string, current: string) => void;
   onRename: (level: Level, id: string, name: string) => Promise<void>;
   onCopy: (level: Level, record: any) => void;
@@ -78,15 +79,20 @@ function budgetCol(ctx: ColumnsCtx, type: 'campaign' | 'adset', title: string): 
     sorter: (a: any, b: any) => cmpNum(parseBudget(a), parseBudget(b)),
     render: (_: any, r: any) => {
       const budget = parseBudget(r);
+      const kind = getBudgetKind(r);
       if (ctx.editingBudget?.id === r.id && ctx.editingBudget?.type === type) {
         const commit = (raw: string) => {
-          const v = parseInt(raw, 10);
-          if (v > 0) ctx.onUpdateBudget(type, r.id, v);
-          else ctx.setEditingBudget(null);
+          const v = parseFloat(raw);
+          if (Number.isFinite(v) && v > 0) {
+            ctx.onUpdateBudget(type, r.id, usdToCents(v), kind);
+          } else {
+            ctx.setEditingBudget(null);
+          }
         };
         return (
           <Input
-            autoFocus size="small" type="number" defaultValue={budget} style={{ width: 80 }}
+            autoFocus size="small" type="number" step="0.01" min="0.01"
+            defaultValue={budget > 0 ? budget.toFixed(2) : ''} style={{ width: 88 }}
             onBlur={(e) => commit(e.target.value)}
             onPressEnter={(e: any) => commit(e.target.value)}
           />
@@ -98,7 +104,7 @@ function budgetCol(ctx: ColumnsCtx, type: 'campaign' | 'adset', title: string): 
           onDoubleClick={() => ctx.setEditingBudget({ id: r.id, type })}
           title="双击编辑预算"
         >
-          {budget > 0 ? `$${budget.toFixed(0)}` : '-'}
+          {formatBudgetUsd(budget)}
         </span>
       );
     },

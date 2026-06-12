@@ -76,10 +76,11 @@ campaignsRouter.put('/:id', async (req: AuthRequest, res: Response) => {
     await writeBackCampaign(req.params.id, {
       status,
       dailyBudgetCents: budget?.daily,
+      lifetimeBudgetCents: budget?.lifetime,
     });
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: fbErrorMessage(err) });
   }
 });
 

@@ -179,7 +179,7 @@ export async function updateFbAdMetaStatus(
 /** 系统内操作成功后立即写回本地（按全局唯一 ID，不需要 accountId） */
 export async function writeBackCampaign(
   campaignId: string,
-  fields: { status?: string; dailyBudgetCents?: number }
+  fields: { status?: string; dailyBudgetCents?: number; lifetimeBudgetCents?: number }
 ): Promise<void> {
   if (fields.status !== undefined) {
     await query(
@@ -187,7 +187,12 @@ export async function writeBackCampaign(
       [campaignId, fields.status]
     );
   }
-  if (fields.dailyBudgetCents !== undefined) {
+  if (fields.lifetimeBudgetCents !== undefined) {
+    await query(
+      `UPDATE fb_campaigns SET lifetime_budget = $2, synced_at = NOW() WHERE campaign_id = $1`,
+      [campaignId, String(Math.round(fields.lifetimeBudgetCents))]
+    );
+  } else if (fields.dailyBudgetCents !== undefined) {
     await query(
       `UPDATE fb_campaigns SET daily_budget = $2, synced_at = NOW() WHERE campaign_id = $1`,
       [campaignId, String(Math.round(fields.dailyBudgetCents))]
@@ -197,7 +202,7 @@ export async function writeBackCampaign(
 
 export async function writeBackAdset(
   adsetId: string,
-  fields: { status?: string; dailyBudgetCents?: number }
+  fields: { status?: string; dailyBudgetCents?: number; lifetimeBudgetCents?: number }
 ): Promise<void> {
   if (fields.status !== undefined) {
     await query(
@@ -205,7 +210,12 @@ export async function writeBackAdset(
       [adsetId, fields.status]
     );
   }
-  if (fields.dailyBudgetCents !== undefined) {
+  if (fields.lifetimeBudgetCents !== undefined) {
+    await query(
+      `UPDATE fb_adsets SET lifetime_budget = $2, synced_at = NOW() WHERE adset_id = $1`,
+      [adsetId, String(Math.round(fields.lifetimeBudgetCents))]
+    );
+  } else if (fields.dailyBudgetCents !== undefined) {
     await query(
       `UPDATE fb_adsets SET daily_budget = $2, synced_at = NOW() WHERE adset_id = $1`,
       [adsetId, String(Math.round(fields.dailyBudgetCents))]

@@ -16,7 +16,7 @@ import { applyColumnOrder } from '../../utils/columnOrder';
 import { ColumnOrderSettings } from '../../components/AdsManager/ColumnOrderSettings';
 import { EmptyState } from '../../components/Common/EmptyState';
 import { useHierarchy } from './useHierarchy';
-import { adsetIdOf, campaignIdOf, filterHierarchy } from './helpers';
+import { adsetIdOf, campaignIdOf, filterHierarchy, type BudgetKind } from './helpers';
 import { buildAdColumns, buildAdsetColumns, buildCampaignColumns } from './columns';
 import { EditModal, EditTarget } from './EditModal';
 import { CopyModal, CopyOptions, CopyTarget } from './CopyModal';
@@ -66,6 +66,7 @@ export const AdsManager: React.FC = () => {
   const [searchAdId, setSearchAdId] = useState('');
   const [searchName, setSearchName] = useState('');
   const [editingBudget, setEditingBudget] = useState<{ id: string; type: string } | null>(null);
+  const [tablePageSize, setTablePageSize] = useState(20);
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
   const [copyTarget, setCopyTarget] = useState<CopyTarget | null>(null);
   const [bulkLoading, setBulkLoading] = useState(false);
@@ -239,9 +240,17 @@ export const AdsManager: React.FC = () => {
     }
   };
 
-  const handleUpdateBudget = async (type: 'campaign' | 'adset', id: string, budgetCents: number) => {
+  const handleUpdateBudget = async (
+    type: 'campaign' | 'adset',
+    id: string,
+    budgetCents: number,
+    kind: BudgetKind,
+  ) => {
     try {
-      await api.put(`${PUT_ENDPOINT[type]}/${id}`, { budget: { daily: budgetCents } });
+      const budget = kind === 'lifetime'
+        ? { lifetime: budgetCents }
+        : { daily: budgetCents };
+      await api.put(`${PUT_ENDPOINT[type]}/${id}`, { budget });
       message.success('预算已更新');
       reload();
     } catch (err: any) {
@@ -358,7 +367,12 @@ export const AdsManager: React.FC = () => {
               onAction={() => navigate('/ads/create')} />
           : '暂无数据',
       }}
-      pagination={{ pageSize: 20, showSizeChanger: true }}
+      pagination={{
+        pageSize: tablePageSize,
+        showSizeChanger: true,
+        pageSizeOptions: ['10', '20', '50', '100'],
+        onShowSizeChange: (_current, size) => setTablePageSize(size),
+      }}
     />
   );
 
