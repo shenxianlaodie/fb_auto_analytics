@@ -22,8 +22,8 @@ async function start() {
     }
   });
 
-  // FB 指标 + 结构：每 15 分钟（合并调度，避免重复扫账户）
-  cron.schedule('*/15 * * * *', async () => {
+  // FB 指标 + 结构：每 5 分钟（合并调度，避免重复扫账户）
+  cron.schedule('*/5 * * * *', async () => {
     try {
       await runMetricsCron();
     } catch (err: any) {
@@ -31,8 +31,8 @@ async function start() {
     }
   });
 
-  // SPU TOP 榜：每 15 分钟
-  cron.schedule('*/15 * * * *', async () => {
+  // SPU TOP 榜：每 5 分钟
+  cron.schedule('*/5 * * * *', async () => {
     try {
       await runSpuTopCron();
     } catch (err: any) {
@@ -49,7 +49,7 @@ async function start() {
     }
   });
 
-  console.log('[SyncWorker] Running: Shoplazza 5min / Metrics+Structure 15min / SpuTop 15min / HistoryBackfill 03:30');
+  console.log('[SyncWorker] Running: Shoplazza 5min / Metrics+Structure 5min / SpuTop 5min / HistoryBackfill 03:30');
 }
 
 start().catch((err) => {
