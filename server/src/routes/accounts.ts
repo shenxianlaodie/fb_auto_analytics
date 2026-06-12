@@ -1,10 +1,19 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { FacebookClient } from '../services/facebookClient';
-import { getCachedAccountsForUser, upsertAccountsForUser } from '../models/adAccount';
+import {
+  getCachedAccountsForUser,
+  propagateGlobalAccountsToUser,
+  upsertAccountsForUser,
+} from '../models/adAccount';
 import { getUserById, touchAccountsSyncedAt } from '../models/user';
 import { listTokens } from '../services/tokenPool';
-import { isAccountRateLimit, isPermissionError, isRateLimitError } from '../services/fbRateLimit';
+import {
+  isAccountRateLimit,
+  isPermissionError,
+  isRateLimitError,
+  isTokenUnavailableError,
+} from '../services/fbRateLimit';
 
 export const accountsRouter = Router();
 accountsRouter.use(authMiddleware);
@@ -23,8 +32,17 @@ function isCacheFresh(syncedAt: string | null | undefined): boolean {
   return Date.now() - new Date(syncedAt).getTime() < ACCOUNTS_CACHE_TTL_MS;
 }
 
+function isRateLimitedError(err: any): boolean {
+  return Boolean(err?.sawRateLimit) || isRateLimitError(err) || isAccountRateLimit(err);
+}
+
 function shouldTryNextToken(err: any): boolean {
-  return isRateLimitError(err) || isAccountRateLimit(err) || isPermissionError(err);
+  return (
+    isRateLimitError(err) ||
+    isAccountRateLimit(err) ||
+    isPermissionError(err) ||
+    isTokenUnavailableError(err)
+  );
 }
 
 /** 轮换 Token 拉取广告账户列表 */
@@ -32,6 +50,7 @@ async function fetchAdAccountsRotating(primaryToken: string): Promise<any[]> {
   const fbClient = FacebookClient.getInstance();
   const now = new Date().toISOString();
   const tried = new Set<string>();
+  let sawRateLimit = false;
 
   async function tryToken(token: string): Promise<any[]> {
     if (tried.has(token)) throw new Error('token already tried');
@@ -39,10 +58,20 @@ async function fetchAdAccountsRotating(primaryToken: string): Promise<any[]> {
     return fbClient.getAdAccounts(token);
   }
 
+  function noteRateLimit(err: any): void {
+    if (isRateLimitError(err) || isAccountRateLimit(err)) sawRateLimit = true;
+  }
+
+  function enrichError(err: any): any {
+    if (sawRateLimit) err.sawRateLimit = true;
+    return err;
+  }
+
   try {
     return await tryToken(primaryToken);
   } catch (firstErr: any) {
-    if (!shouldTryNextToken(firstErr)) throw firstErr;
+    noteRateLimit(firstErr);
+    if (!shouldTryNextToken(firstErr)) throw enrichError(firstErr);
 
     const pool = await listTokens();
     const candidates = pool.filter(
@@ -60,10 +89,11 @@ async function fetchAdAccountsRotating(primaryToken: string): Promise<any[]> {
         return await tryToken(t.access_token);
       } catch (err: any) {
         lastErr = err;
-        if (!shouldTryNextToken(err)) throw err;
+        noteRateLimit(err);
+        if (!shouldTryNextToken(err)) throw enrichError(err);
       }
     }
-    throw lastErr;
+    throw enrichError(lastErr);
   }
 }
 
@@ -115,17 +145,34 @@ accountsRouter.get('/', async (req: AuthRequest, res: Response) => {
   } catch (err: any) {
     console.error('[Accounts] Facebook fetch failed:', fbErrorMessage(err));
 
-    const filtered = filterByPermission(cached, req.userRole!, req.userAllowedAccounts!);
+    let workingCache = cached;
+    if (forceRefresh) {
+      const globalCount = await propagateGlobalAccountsToUser(req.userId!);
+      if (globalCount > cached.length) {
+        await touchAccountsSyncedAt(req.userId!);
+        workingCache = await getCachedAccountsForUser(req.userId!);
+        console.log(
+          `[Accounts] User ${req.userId} merged global catalog: ${cached.length} -> ${workingCache.length}`
+        );
+      }
+    }
+
+    const filtered = filterByPermission(workingCache, req.userRole!, req.userAllowedAccounts!);
     if (filtered.length > 0) {
-      const isLimited = isRateLimitError(err) || isAccountRateLimit(err);
+      const isLimited = isRateLimitedError(err);
+      const mergedFromGlobal = workingCache.length > cached.length;
       res.json({
         data: filtered,
-        source: 'cache',
+        source: mergedFromGlobal ? 'global_cache' : 'cache',
         stale: true,
         total: filtered.length,
         warning: isLimited
-          ? `Facebook API 暂时限流，已显示本地缓存的 ${filtered.length} 个账户。请 10 分钟后再点「刷新账户」。`
-          : `无法连接 Facebook，已显示本地缓存的 ${filtered.length} 个账户。`,
+          ? mergedFromGlobal
+            ? `Facebook API 暂时限流，已从系统账户目录补全到 ${filtered.length} 个账户。请稍后再点「刷新账户」与 Facebook 同步。`
+            : `Facebook API 暂时限流，已显示本地缓存的 ${filtered.length} 个账户。请 10 分钟后再点「刷新账户」。`
+          : mergedFromGlobal
+            ? `无法连接 Facebook，已从系统账户目录补全到 ${filtered.length} 个账户（${fbErrorMessage(err)}）。`
+            : `无法连接 Facebook，已显示本地缓存的 ${filtered.length} 个账户（${fbErrorMessage(err)}）。`,
       });
       return;
     }

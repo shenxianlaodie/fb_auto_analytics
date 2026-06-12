@@ -89,6 +89,9 @@ export const SpuTopBoard: React.FC = () => {
   const fetchColumnOrder = useSpuTopColumnOrderStore((s) => s.fetchOrder);
 
   const [statDate, setStatDate] = useState(todayDateString());
+  const [rangeStart, setRangeStart] = useState('');
+  const [rangeEnd, setRangeEnd] = useState('');
+  const [rangeDays, setRangeDays] = useState(14);
   const [shopList, setShopList] = useState<ShopSpuTop[]>([]);
   const [latestSyncedAt, setLatestSyncedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -116,6 +119,9 @@ export const SpuTopBoard: React.FC = () => {
       });
       let shops: ShopSpuTop[] = resp.data.shops || [];
       setLatestSyncedAt(resp.data.latestSyncedAt || null);
+      setRangeStart(resp.data.rangeStart || statDate);
+      setRangeEnd(resp.data.rangeEnd || statDate);
+      setRangeDays(resp.data.rangeDays || 14);
 
       const collId = activeShopId ? collectionByShop[activeShopId] || '' : '';
       if (activeShopId && collId) {
@@ -127,6 +133,9 @@ export const SpuTopBoard: React.FC = () => {
         if (filteredShop) {
           shops = shops.map((s) => (s.shopId === activeShopId ? filteredShop : s));
         }
+        if (filtered.data.rangeStart) setRangeStart(filtered.data.rangeStart);
+        if (filtered.data.rangeEnd) setRangeEnd(filtered.data.rangeEnd);
+        if (filtered.data.rangeDays) setRangeDays(filtered.data.rangeDays);
       }
 
       setShopList(shops);
@@ -367,11 +376,14 @@ export const SpuTopBoard: React.FC = () => {
         message={
           <Space split="|" wrap>
             <span>统计日期: {statDate}</span>
+            <span>
+              统计范围: {rangeStart || statDate} ~ {rangeEnd || statDate}（近 {rangeDays} 天）
+            </span>
             <span>每 15 分钟自动刷新</span>
             {latestSyncedAt && (
               <span>最后同步: {new Date(latestSyncedAt).toLocaleString()}</span>
             )}
-            <span>默认按综合分排序（销量/浏览/转化率/加购率/新品加成）</span>
+            <span>默认按综合分排序（销量28%/转化率25%/加购率18%/浏览量13%/新品10%/售价6%）</span>
             {isAdmin && <span>管理员可拖拽微调排序；列设置保存后全员生效</span>}
           </Space>
         }

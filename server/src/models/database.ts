@@ -321,6 +321,24 @@ export async function initDatabase(): Promise<Pool> {
     await client.query(`ALTER TABLE ad_accounts ADD COLUMN IF NOT EXISTS sync_priority BOOLEAN DEFAULT false`);
     await client.query(`ALTER TABLE shoplazza_spu_top ADD COLUMN IF NOT EXISTS product_created_at TEXT`);
     await client.query(`ALTER TABLE shoplazza_spu_top ADD COLUMN IF NOT EXISTS composite_score NUMERIC(12,4) DEFAULT 0`);
+    await client.query(`ALTER TABLE shoplazza_spu_top ADD COLUMN IF NOT EXISTS range_start TEXT`);
+    await client.query(`ALTER TABLE shoplazza_spu_top ADD COLUMN IF NOT EXISTS range_end TEXT`);
+    await client.query(`ALTER TABLE shoplazza_spu_top ADD COLUMN IF NOT EXISTS price NUMERIC(10,2) DEFAULT 0`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ad_drafts (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '未命名草稿',
+        payload JSONB NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_ad_drafts_user_account
+      ON ad_drafts(user_id, account_id, updated_at DESC)
+    `);
     await client.query(`
       CREATE TABLE IF NOT EXISTS fb_token_pool (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -29,6 +29,7 @@ const STRUCTURE_TTL_MS = 15 * 60 * 1000;
 const SHOP_SYNC_GAP_MS = 800;
 const MIN_ACCOUNT_SYNC_GAP_MS = 3000;
 const METRICS_CRON_WINDOW_MS = 14 * 60 * 1000;
+const SPEND_PROBE_GAP_MS = 300;
 
 const inflightAccounts = new Set<string>();
 const inflightShops = new Set<string>();
@@ -196,11 +197,7 @@ async function runRefreshJob(input: RefreshInput): Promise<void> {
     await setRefreshing(cleanId, 'structure', input.dateStart, input.dateEnd, true);
     try {
       const structureSync = new StructureSyncService(accessToken);
-      // 当天已有全量基线时走增量（updated_time 过滤）；每天首次同步自动全量兜底
-      const sinceMs = structureState?.last_synced_at
-        ? new Date(structureState.last_synced_at).getTime()
-        : undefined;
-      await structureSync.syncStructure(input.accountId, input.dateStart, input.dateEnd, { sinceMs });
+      await structureSync.syncStructure(input.accountId, input.dateStart, input.dateEnd);
       structureOk = true;
     } catch (err: any) {
       lastErr = err;
@@ -268,17 +265,13 @@ export async function runMetricsCron(): Promise<void> {
     priorityRows.map((r: any) => String(r.account_id).replace('act_', ''))
   );
 
-  const accounts = await query(
-    `SELECT DISTINCT ad_account_id FROM fb_ads
-     UNION SELECT DISTINCT ad_account_id FROM fb_campaigns
-     UNION SELECT DISTINCT account_id AS ad_account_id FROM ad_accounts`
-  );
+  const { getAllDistinctAccountIds } = await import('../models/adAccount');
+  const { accountHasSpendToday } = await import('./accountSpendService');
+  const allAccountIds = await getAllDistinctAccountIds();
 
   const due: Array<{ cleanId: string; hot: boolean; priority: boolean }> = [];
-  for (const row of accounts) {
-    const accountId = row.ad_account_id;
-    if (!accountId) continue;
-    const cleanId = String(accountId).replace('act_', '');
+  for (const cleanId of allAccountIds) {
+    if (!cleanId) continue;
 
     if (isAccountInCooldown(cleanId)) continue;
     if (getUsageThrottleState(cleanId) === 'halt') {
@@ -287,6 +280,15 @@ export async function runMetricsCron(): Promise<void> {
     }
 
     const hot = activeIds.has(cleanId);
+    const priority = priorityIds.has(cleanId);
+
+    // 冷路径：遍历所有账户，仅当日有花费才纳入同步队列
+    if (!hot && !priority) {
+      const hasSpend = await accountHasSpendToday(cleanId, dateStart, dateEnd);
+      if (!hasSpend) continue;
+      await sleep(SPEND_PROBE_GAP_MS);
+    }
+
     const tier = await getAccountTier(cleanId);
     const ttl = hot ? hotMetricsTtlMs(tier) : coldMetricsTtlMs(tier);
 
@@ -296,7 +298,8 @@ export async function runMetricsCron(): Promise<void> {
     ]);
     const dormant = await isDormantAccount(cleanId);
     const skipStructure = await shouldSkipStructure(cleanId, structureState?.last_synced_at);
-    const metricsDue = !dormant && isStale(metricsState?.last_synced_at, ttl);
+    const metricsDue =
+      (hot || priority || !dormant) && isStale(metricsState?.last_synced_at, ttl);
     const structureDue =
       !skipStructure && isStale(structureState?.last_synced_at, STRUCTURE_TTL_MS);
     if (!metricsDue && !structureDue) continue;
@@ -304,7 +307,7 @@ export async function runMetricsCron(): Promise<void> {
     due.push({
       cleanId,
       hot,
-      priority: priorityIds.has(cleanId) || hot,
+      priority: priority || hot,
     });
   }
 

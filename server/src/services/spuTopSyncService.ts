@@ -7,7 +7,7 @@ import {
 } from '../models/shoplazzaSpuTop';
 import { ShoplazzaClient } from './shoplazzaClient';
 import { isShoplazzaNonRetryableError, withShoplazzaRetry } from '../utils/shoplazzaRetry';
-import { todayDateString } from '../utils/todayRange';
+import { spuTopDateRange, todayDateString } from '../utils/todayRange';
 
 const SHOP_TIMEOUT_MS = 120_000;
 const SHOP_MAX_RETRIES = 3;
@@ -90,7 +90,8 @@ export class SpuTopSyncService {
         : { collectionKeyword: collectionId, limit: 20 }
       : { limit: 20 };
 
-    const rows = await this.client.fetchSpuTop(shop, statDate, statDate, options);
+    const { dateStart, dateEnd } = spuTopDateRange(statDate);
+    const rows = await this.client.fetchSpuTop(shop, dateStart, dateEnd, options);
 
     const manual = await isManualOrder(shop.shopId, statDate, collectionId);
     const payload = {
@@ -98,6 +99,8 @@ export class SpuTopSyncService {
       shopDomain: shop.shopDomain,
       shopName: shop.name,
       statDate,
+      rangeStart: dateStart,
+      rangeEnd: dateEnd,
       collectionId,
       collectionTitle: collectionTitle || (collectionId || undefined),
       rows,

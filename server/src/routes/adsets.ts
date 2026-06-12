@@ -2,6 +2,8 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { AdSetService } from '../services/adSetService';
 import { writeBackAdset } from '../models/fbStructure';
+import { FacebookClient } from '../services/facebookClient';
+import { fbErrorMessage } from '../utils/fbError';
 
 export const adsetsRouter = Router();
 adsetsRouter.use(authMiddleware);
@@ -78,5 +80,22 @@ adsetsRouter.delete('/:id', async (req: AuthRequest, res: Response) => {
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/adsets/:id/copy — 复制广告组（可指定目标系列）
+adsetsRouter.post('/:id/copy', async (req: AuthRequest, res: Response) => {
+  try {
+    const { count = 1, statusOption = 'PAUSED', targetCampaignId } = req.body;
+    const fb = FacebookClient.getInstance();
+    const copies: any[] = [];
+    for (let i = 0; i < Math.min(Number(count) || 1, 10); i++) {
+      const params: Record<string, any> = { deep_copy: true, status_option: statusOption };
+      if (targetCampaignId) params.campaign_id = targetCampaignId;
+      copies.push(await fb.copyObject(req.params.id, req.accessToken!, params));
+    }
+    res.json({ success: true, copies });
+  } catch (err: any) {
+    res.status(500).json({ error: fbErrorMessage(err) });
   }
 });
