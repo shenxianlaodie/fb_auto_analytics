@@ -12,9 +12,9 @@ export function hotMetricsTtlMs(tier: AccountTier): number {
   return 2 * 60 * 1000;
 }
 
-/** 冷路径 metrics TTL（大账户保持 15 分钟） */
+/** 冷路径 metrics TTL */
 export function coldMetricsTtlMs(_tier: AccountTier): number {
-  return 15 * 60 * 1000;
+  return 5 * 60 * 1000;
 }
 
 export function tierFromAdCount(adCount: number, campaignCount = 0): AccountTier {

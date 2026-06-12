@@ -49,7 +49,7 @@ async function backfillAccount(accountId: string, days: number): Promise<number>
   );
 
   let written = 0;
-  // 从 days 天前回填到昨天（今天的数据由 15 分钟常规同步负责）
+  // 从 days 天前回填到昨天（今天的数据由 5 分钟常规同步负责）
   for (let offset = days; offset >= 1; offset -= SEGMENT_DAYS) {
     const since = fmtDate(daysAgo(offset));
     const until = fmtDate(daysAgo(Math.max(1, offset - SEGMENT_DAYS + 1)));

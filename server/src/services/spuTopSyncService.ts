@@ -11,7 +11,7 @@ import { spuTopDateRange, todayDateString } from '../utils/todayRange';
 
 const SHOP_TIMEOUT_MS = 120_000;
 const SHOP_MAX_RETRIES = 3;
-const STALE_MS = 15 * 60 * 1000;
+const STALE_MS = 5 * 60 * 1000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
