@@ -24,11 +24,11 @@ const HOT_UTM_TTL_MS = 2 * 60 * 1000;
 const HOT_STRUCTURE_TTL_MS = 5 * 60 * 1000;
 
 const COLD_UTM_TTL_MS = 10 * 60 * 1000;
-const STRUCTURE_TTL_MS = 15 * 60 * 1000;
+const STRUCTURE_TTL_MS = 5 * 60 * 1000;
 
 const SHOP_SYNC_GAP_MS = 800;
 const MIN_ACCOUNT_SYNC_GAP_MS = 3000;
-const METRICS_CRON_WINDOW_MS = 14 * 60 * 1000;
+const METRICS_CRON_WINDOW_MS = 4 * 60 * 1000;
 const SPEND_PROBE_GAP_MS = 300;
 
 const inflightAccounts = new Set<string>();
@@ -243,7 +243,7 @@ async function persistAdAccount(input: RefreshInput): Promise<void> {
   );
 }
 
-/** Cron：冷路径刷新 metrics + structure（15 分钟 TTL）；活跃账户 metrics 用短 TTL */
+/** Cron：冷路径刷新 metrics + structure（5 分钟 TTL）；活跃账户 metrics 用短 TTL */
 export async function runMetricsCron(): Promise<void> {
   const poolCheck = await queryOne(
     `SELECT id FROM fb_token_pool WHERE status = 'active' LIMIT 1`

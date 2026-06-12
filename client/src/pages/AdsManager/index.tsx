@@ -1,14 +1,16 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Button, DatePicker, Dropdown, Input, Popconfirm, Space, Table, Tabs, Tag, Typography, message,
+  Alert, Breadcrumb, Button, DatePicker, Dropdown, Input, Popconfirm, Space, Table, Tabs, Tag, Typography, message,
 } from 'antd';
-import { CloseOutlined, DeleteOutlined, FileTextOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import {
+  ArrowLeftOutlined, CloseOutlined, DeleteOutlined, FileTextOutlined, PlusOutlined, ReloadOutlined, SearchOutlined,
+} from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../../services/api';
 import { useAccountStore } from '../../store/accountStore';
 import { useUIStore } from '../../store/uiStore';
-import { Level, useAdsManagerStore } from '../../store/adsManagerStore';
+import { getDrillLevel, Level, useAdsManagerStore } from '../../store/adsManagerStore';
 import { useColumnOrderStore } from '../../store/columnOrderStore';
 import { applyColumnOrder } from '../../utils/columnOrder';
 import { ColumnOrderSettings } from '../../components/AdsManager/ColumnOrderSettings';
@@ -32,6 +34,7 @@ const PUT_ENDPOINT: Record<Level, string> = {
 
 export const AdsManager: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { accountId } = useAccountStore();
   const [drafts, setDrafts] = useState<{ id: string; name: string; updated_at: string }[]>([]);
 
@@ -50,9 +53,15 @@ export const AdsManager: React.FC = () => {
     loadDrafts();
   };
   const { dateRange, setDateRange } = useUIStore();
-  const { activeTab, selected, setActiveTab, setSelected, clearSelected } = useAdsManagerStore();
+  const {
+    activeTab, selected, drill, setActiveTab, setSelected, clearSelected,
+    enterCampaign, enterAdset, exitToRoot, exitToCampaign, setDrill,
+  } = useAdsManagerStore();
   const columnOrders = useColumnOrderStore((s) => s.orders);
   const { campaigns, adsets, ads, loading, syncMeta, reload, refresh } = useHierarchy();
+
+  const drillLevel = getDrillLevel(drill);
+  const viewLevel: Level = drillLevel === 'adset' ? 'ad' : drillLevel === 'campaign' ? 'adset' : activeTab;
 
   const [searchAdId, setSearchAdId] = useState('');
   const [searchName, setSearchName] = useState('');
@@ -62,9 +71,99 @@ export const AdsManager: React.FC = () => {
   const [bulkLoading, setBulkLoading] = useState(false);
   const [copySubmitting, setCopySubmitting] = useState(false);
 
+  const drillToCampaign = useCallback((id: string, name: string) => {
+    enterCampaign(id, name);
+    setSearchParams({ campaignId: id }, { replace: false });
+  }, [enterCampaign, setSearchParams]);
+
+  const drillToAdset = useCallback((id: string, name: string, campaignId?: string, campaignName?: string) => {
+    const cid = campaignId || drill.campaignId || searchParams.get('campaignId') || '';
+    const cname = campaignName || drill.campaignName || campaigns.find((c) => c.id === cid)?.name || '';
+    if (cid && cname) {
+      setDrill({
+        campaignId: cid,
+        campaignName: cname,
+        adsetId: id,
+        adsetName: name,
+      });
+    } else {
+      enterAdset(id, name);
+    }
+    setSearchParams({ campaignId: cid, adsetId: id }, { replace: false });
+  }, [campaigns, drill.campaignId, drill.campaignName, enterAdset, searchParams, setDrill, setSearchParams]);
+
+  const goToRoot = useCallback(() => {
+    exitToRoot();
+    setSearchParams({}, { replace: false });
+  }, [exitToRoot, setSearchParams]);
+
+  const goToCampaign = useCallback(() => {
+    exitToCampaign();
+    if (drill.campaignId) {
+      setSearchParams({ campaignId: drill.campaignId }, { replace: false });
+    }
+  }, [drill.campaignId, exitToCampaign, setSearchParams]);
+
+  const prevAccountIdRef = useRef(accountId);
   useEffect(() => {
     clearSelected();
+    if (prevAccountIdRef.current !== accountId) {
+      exitToRoot();
+      setSearchParams({}, { replace: true });
+      prevAccountIdRef.current = accountId;
+    }
   }, [accountId]);
+
+  useEffect(() => {
+    const campaignId = searchParams.get('campaignId');
+    const adsetId = searchParams.get('adsetId');
+
+    if (!campaignId) {
+      if (drill.campaignId) exitToRoot();
+      return;
+    }
+
+    if (!campaigns.length && !adsets.length) return;
+
+    const campaign = campaigns.find((c) => c.id === campaignId);
+    if (!campaign) {
+      exitToRoot();
+      setSearchParams({}, { replace: true });
+      return;
+    }
+
+    if (!adsetId) {
+      if (drill.campaignId !== campaignId || drill.adsetId) {
+        enterCampaign(campaignId, campaign.name);
+      }
+      return;
+    }
+
+    const adset = adsets.find((a) => a.id === adsetId && campaignIdOf(a) === campaignId);
+    if (!adset) {
+      if (drill.campaignId !== campaignId || drill.adsetId) {
+        enterCampaign(campaignId, campaign.name);
+      }
+      if (searchParams.get('adsetId')) {
+        setSearchParams({ campaignId }, { replace: true });
+      }
+      return;
+    }
+
+    if (
+      drill.campaignId !== campaignId
+      || drill.adsetId !== adsetId
+      || drill.campaignName !== campaign.name
+      || drill.adsetName !== adset.name
+    ) {
+      setDrill({
+        campaignId,
+        campaignName: campaign.name,
+        adsetId,
+        adsetName: adset.name,
+      });
+    }
+  }, [searchParams, campaigns, adsets]);
 
   // --- 搜索过滤 ---
   const filtered = useMemo(
@@ -93,9 +192,29 @@ export const AdsManager: React.FC = () => {
     return filtered.ads;
   }, [filtered.ads, selAdsets, selCampaigns]);
 
+  const drillAdsets = useMemo(
+    () => (drill.campaignId
+      ? [...filtered.adsets.filter((a) => campaignIdOf(a) === drill.campaignId)]
+        .sort((a, b) => (Number(b.spend) || 0) - (Number(a.spend) || 0))
+      : []),
+    [filtered.adsets, drill.campaignId],
+  );
+  const drillAds = useMemo(
+    () => (drill.adsetId
+      ? [...filtered.ads.filter((a) => adsetIdOf(a) === drill.adsetId)]
+        .sort((a, b) => (Number(b.spend) || 0) - (Number(a.spend) || 0))
+      : []),
+    [filtered.ads, drill.adsetId],
+  );
+
   const dataOfTab: Record<Level, any[]> = { campaign: tabCampaigns, adset: tabAdsets, ad: tabAds };
+  const dataOfLevel = (level: Level) => {
+    if (drillLevel === 'adset') return drillAds;
+    if (drillLevel === 'campaign') return drillAdsets;
+    return dataOfTab[level];
+  };
   const recordsOfSelected = (level: Level) =>
-    dataOfTab[level].filter((r) => selected[level].includes(r.id));
+    dataOfLevel(level).filter((r) => selected[level].includes(r.id));
 
   // --- 操作 ---
   const handleToggleStatus = async (level: Level, id: string, current: string) => {
@@ -132,11 +251,11 @@ export const AdsManager: React.FC = () => {
   };
 
   const handleBulkStatus = async (status: 'ACTIVE' | 'PAUSED') => {
-    const ids = recordsOfSelected(activeTab).map((r: any) => r.id);
+    const ids = recordsOfSelected(viewLevel).map((r: any) => r.id);
     if (!ids.length) return;
     setBulkLoading(true);
     try {
-      const resp = await api.post('/bulk/status', { level: activeTab, ids, status });
+      const resp = await api.post('/bulk/status', { level: viewLevel, ids, status });
       const { succeeded, failed } = resp.data;
       if (failed.length === 0) {
         message.success(`已${status === 'ACTIVE' ? '开启' : '暂停'} ${succeeded.length} 项`);
@@ -194,19 +313,27 @@ export const AdsManager: React.FC = () => {
     onEdit: (level: Level, record: any) => setEditTarget({ level, record, parentId: null }),
     onCreateChild: (level: 'adset' | 'ad', parentId: string) =>
       setEditTarget({ level, record: null, parentId }),
+    onDrillIn: (level: 'campaign' | 'adset', record: any) => {
+      if (level === 'campaign') drillToCampaign(record.id, record.name);
+      else {
+        const cid = campaignIdOf(record);
+        const campaign = campaigns.find((c) => c.id === cid);
+        drillToAdset(record.id, record.name, cid, campaign?.name);
+      }
+    },
   };
 
   const campaignColumns = useMemo(
     () => applyColumnOrder(buildCampaignColumns(columnsCtx), columnOrders.campaign),
-    [filtered.ads, editingBudget, columnOrders.campaign],
+    [filtered.ads, editingBudget, columnOrders.campaign, campaigns, drillToCampaign, drillToAdset],
   );
   const adsetColumns = useMemo(
     () => applyColumnOrder(buildAdsetColumns(columnsCtx), columnOrders.adset),
-    [filtered.ads, editingBudget, columnOrders.adset],
+    [filtered.ads, editingBudget, columnOrders.adset, campaigns, drillToCampaign, drillToAdset],
   );
   const adColumns = useMemo(
     () => applyColumnOrder(buildAdColumns(columnsCtx), columnOrders.ad),
-    [filtered.ads, editingBudget, columnOrders.ad],
+    [filtered.ads, editingBudget, columnOrders.ad, campaigns, drillToCampaign, drillToAdset],
   );
 
   const renderTable = (level: Level, columns: any[], data: any[]) => (
@@ -237,13 +364,13 @@ export const AdsManager: React.FC = () => {
 
   // --- 联动筛选提示条 ---
   const filterChips: { label: string; clear: () => void }[] = [];
-  if (activeTab !== 'campaign' && selCampaigns.length > 0) {
+  if (drillLevel === 'root' && activeTab !== 'campaign' && selCampaigns.length > 0) {
     filterChips.push({
       label: `已筛选：${selCampaigns.length} 个广告系列`,
       clear: () => clearSelected('campaign'),
     });
   }
-  if (activeTab === 'ad' && selAdsets.length > 0) {
+  if (drillLevel === 'root' && activeTab === 'ad' && selAdsets.length > 0) {
     filterChips.push({
       label: `已筛选：${selAdsets.length} 个广告组`,
       clear: () => clearSelected('adset'),
@@ -361,35 +488,69 @@ export const AdsManager: React.FC = () => {
       )}
 
       <BulkActionBar
-        count={recordsOfSelected(activeTab).length}
+        count={recordsOfSelected(viewLevel).length}
         loading={bulkLoading}
         onEnable={() => handleBulkStatus('ACTIVE')}
         onPause={() => handleBulkStatus('PAUSED')}
-        onCopy={() => openCopy(activeTab, recordsOfSelected(activeTab))}
-        onClear={() => clearSelected(activeTab)}
+        onCopy={() => openCopy(viewLevel, recordsOfSelected(viewLevel))}
+        onClear={() => clearSelected(viewLevel)}
       />
 
-      <Tabs
-        activeKey={activeTab}
-        onChange={(key) => setActiveTab(key as Level)}
-        items={[
-          {
-            key: 'campaign',
-            label: `广告系列 (${tabCampaigns.length})`,
-            children: renderTable('campaign', campaignColumns, tabCampaigns),
-          },
-          {
-            key: 'adset',
-            label: `广告组 (${tabAdsets.length})`,
-            children: renderTable('adset', adsetColumns, tabAdsets),
-          },
-          {
-            key: 'ad',
-            label: `广告 (${tabAds.length})`,
-            children: renderTable('ad', adColumns, tabAds),
-          },
-        ]}
-      />
+      {drillLevel !== 'root' && (
+        <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <Button
+            icon={<ArrowLeftOutlined />}
+            onClick={drillLevel === 'adset' ? goToCampaign : goToRoot}
+          >
+            返回
+          </Button>
+          <Breadcrumb
+            items={[
+              {
+                title: (
+                  <Typography.Link onClick={goToRoot}>广告管理</Typography.Link>
+                ),
+              },
+              ...(drill.campaignName ? [{
+                title: drill.adsetId ? (
+                  <Typography.Link onClick={goToCampaign}>{drill.campaignName}</Typography.Link>
+                ) : (
+                  drill.campaignName
+                ),
+              }] : []),
+              ...(drill.adsetName ? [{ title: drill.adsetName }] : []),
+            ]}
+          />
+        </div>
+      )}
+
+      {drillLevel === 'root' ? (
+        <Tabs
+          activeKey={activeTab}
+          onChange={(key) => setActiveTab(key as Level)}
+          items={[
+            {
+              key: 'campaign',
+              label: `广告系列 (${tabCampaigns.length})`,
+              children: renderTable('campaign', campaignColumns, tabCampaigns),
+            },
+            {
+              key: 'adset',
+              label: `广告组 (${tabAdsets.length})`,
+              children: renderTable('adset', adsetColumns, tabAdsets),
+            },
+            {
+              key: 'ad',
+              label: `广告 (${tabAds.length})`,
+              children: renderTable('ad', adColumns, tabAds),
+            },
+          ]}
+        />
+      ) : drillLevel === 'campaign' ? (
+        renderTable('adset', adsetColumns, drillAdsets)
+      ) : (
+        renderTable('ad', adColumns, drillAds)
+      )}
 
       <EditModal
         target={editTarget}
