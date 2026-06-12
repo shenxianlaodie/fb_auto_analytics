@@ -20,17 +20,29 @@ export interface ColumnsCtx {
   onCopy: (level: Level, record: any) => void;
   onEdit: (level: Level, record: any) => void;
   onCreateChild: (level: 'adset' | 'ad', parentId: string) => void;
+  onDrillIn?: (level: 'campaign' | 'adset', record: any) => void;
 }
 
 // --- 通用列 ---
 
-function nameCol(ctx: ColumnsCtx, level: Level, title: string): any {
+function nameCol(
+  ctx: ColumnsCtx,
+  level: Level,
+  title: string,
+  drillable = false,
+): any {
   return {
     title, dataIndex: 'name', key: 'name', width: 220, fixed: 'left' as const,
     sorter: (a: any, b: any) => cmpStr(a.name, b.name),
     render: (_: any, r: any) => (
       <NameCell
         name={r.name}
+        drillable={drillable}
+        onDrillIn={
+          drillable && ctx.onDrillIn
+            ? () => ctx.onDrillIn!(level as 'campaign' | 'adset', r)
+            : undefined
+        }
         onRename={(newName) => ctx.onRename(level, r.id, newName)}
         onCopy={() => ctx.onCopy(level, r)}
       />
@@ -198,7 +210,7 @@ function adMetricCols(): any[] {
 
 export function buildCampaignColumns(ctx: ColumnsCtx): ColumnsType<any> {
   return [
-    nameCol(ctx, 'campaign', '广告系列名'),
+    nameCol(ctx, 'campaign', '广告系列名', true),
     switchCol(ctx, 'campaign'),
     statusCol('campaign'),
     budgetCol(ctx, 'campaign', '预算'),
@@ -221,7 +233,7 @@ export function buildCampaignColumns(ctx: ColumnsCtx): ColumnsType<any> {
 
 export function buildAdsetColumns(ctx: ColumnsCtx): ColumnsType<any> {
   return [
-    nameCol(ctx, 'adset', '广告组名称'),
+    nameCol(ctx, 'adset', '广告组名称', true),
     switchCol(ctx, 'adset'),
     statusCol('adset'),
     budgetCol(ctx, 'adset', '日预算'),
