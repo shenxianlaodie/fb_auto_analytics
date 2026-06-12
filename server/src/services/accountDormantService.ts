@@ -63,4 +63,21 @@ export async function shouldSkipStructure(
   return Date.now() - new Date(lastSyncedAt).getTime() < DORMANT_STRUCTURE_TTL_MS;
 }
 
+/** 探测到当日有花费时解除休眠，恢复常规同步 */
+export async function wakeAccountFromDormant(accountId: string): Promise<void> {
+  const cleanId = accountId.replace('act_', '');
+  const row = await queryOne(
+    `SELECT id FROM ad_accounts
+     WHERE account_id IN ($1, $2) AND dormant_since IS NOT NULL
+     LIMIT 1`,
+    [cleanId, `act_${cleanId}`]
+  );
+  if (!row) return;
+  await query(
+    `UPDATE ad_accounts SET empty_structure_streak = 0, dormant_since = NULL WHERE id = $1`,
+    [row.id]
+  );
+  console.log(`[Dormant] account=${cleanId} 检测到花费，解除休眠`);
+}
+
 export { DORMANT_STRUCTURE_TTL_MS };

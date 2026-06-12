@@ -7,25 +7,21 @@ import {
 import { touchSyncState } from '../models/syncState';
 import { extractPostIdFromStory, resolveStoryId } from '../utils/postId';
 import { sleep } from '../utils/sleep';
-import { recordStructureResult } from './accountDormantService';
 import { refreshAccountTierCache } from './accountTierService';
+import { fetchAdInsightsWithSpend } from './spendInsightsHelper';
 
-const SERIAL_GAP_MS = 1000;
-const PAGE_GAP_MS = 300;
+const BATCH_GAP_MS = 300;
 
-/** 增量同步时回看重叠窗口，容忍时钟偏差/边界遗漏 */
-const INCREMENTAL_OVERLAP_MS = 5 * 60 * 1000;
+const AD_FIELDS =
+  'id,name,adset_id,campaign_id,status,creative{id,effective_object_story_id,object_story_id}';
+const CAMPAIGN_FIELDS =
+  'id,name,objective,status,daily_budget,lifetime_budget';
+const ADSET_FIELDS =
+  'id,name,campaign_id,status,daily_budget,lifetime_budget';
 
 export interface StructureSyncOptions {
-  /** 上次结构同步时间；提供时做增量拉取（updated_time 过滤） */
+  /** @deprecated 已改为仅同步有花费广告，不再做全量增量 */
   sinceMs?: number;
-}
-
-function updatedTimeFilter(objectPrefix: string, sinceMs: number): string {
-  const sinceUnix = Math.floor((sinceMs - INCREMENTAL_OVERLAP_MS) / 1000);
-  return JSON.stringify([
-    { field: `${objectPrefix}.updated_time`, operator: 'GREATER_THAN', value: sinceUnix },
-  ]);
 }
 
 export class StructureSyncService {
@@ -37,38 +33,67 @@ export class StructureSyncService {
     this.accessToken = accessToken;
   }
 
+  /** 仅同步当日有 spend 的广告及其所属 campaign/adset（insights + batch GET） */
   async syncStructure(
     accountId: string,
     dateStart: string,
     dateEnd: string,
-    options: StructureSyncOptions = {}
+    _options: StructureSyncOptions = {}
   ): Promise<{ campaigns: number; adsets: number; ads: number }> {
     const cleanId = accountId.replace('act_', '');
-    const incremental = typeof options.sinceMs === 'number' && options.sinceMs > 0;
 
-    const campaignParams = incremental
-      ? { filtering: updatedTimeFilter('campaign', options.sinceMs!) }
-      : undefined;
-    const adsetParams = incremental
-      ? { filtering: updatedTimeFilter('adset', options.sinceMs!) }
-      : undefined;
-    const adParams = incremental
-      ? { filtering: updatedTimeFilter('ad', options.sinceMs!) }
-      : undefined;
+    const insightRows = await fetchAdInsightsWithSpend(
+      this.fbClient,
+      cleanId,
+      this.accessToken,
+      dateStart,
+      dateEnd
+    );
 
-    const campaigns = await this.fbClient.getAllCampaigns(
-      cleanId, this.accessToken, 200, 50, PAGE_GAP_MS, campaignParams
-    );
-    await sleep(SERIAL_GAP_MS);
-    const adsets = await this.fbClient.getAllAdSets(
-      cleanId, this.accessToken, 200, 50, PAGE_GAP_MS, adsetParams
-    );
-    await sleep(SERIAL_GAP_MS);
-    const ads = await this.fbClient.getAllAds(
-      cleanId, this.accessToken, {}, 100, 20, PAGE_GAP_MS, adParams
-    );
+    if (insightRows.length === 0) {
+      await touchSyncState(cleanId, 'structure', dateStart, dateEnd);
+      console.log(
+        `[StructureSync] account=${cleanId} mode=spend-only campaigns=0 adsets=0 ads=0 (无花费广告)`
+      );
+      return { campaigns: 0, adsets: 0, ads: 0 };
+    }
+
+    const adIds = [...new Set(insightRows.map((r) => r.ad_id))];
+    const campaignIds = [
+      ...new Set(insightRows.map((r) => r.campaign_id).filter(Boolean) as string[]),
+    ];
+    const adsetIds = [
+      ...new Set(insightRows.map((r) => r.adset_id).filter(Boolean) as string[]),
+    ];
+
+    const insightByAd = new Map(insightRows.map((r) => [r.ad_id, r]));
+
+    const [ads, campaigns, adsets] = await Promise.all([
+      this.fbClient.batchGetByIds(
+        this.accessToken,
+        adIds.map((id) => ({ id, fields: AD_FIELDS })),
+        BATCH_GAP_MS
+      ),
+      campaignIds.length > 0
+        ? this.fbClient.batchGetByIds(
+            this.accessToken,
+            campaignIds.map((id) => ({ id, fields: CAMPAIGN_FIELDS })),
+            BATCH_GAP_MS
+          )
+        : Promise.resolve([]),
+      adsetIds.length > 0
+        ? this.fbClient.batchGetByIds(
+            this.accessToken,
+            adsetIds.map((id) => ({ id, fields: ADSET_FIELDS })),
+            BATCH_GAP_MS
+          )
+        : Promise.resolve([]),
+    ]);
+
+    await sleep(BATCH_GAP_MS);
 
     for (const c of campaigns) {
+      if (!c?.id) continue;
       await upsertFbCampaign({
         adAccountId: cleanId,
         campaignId: c.id,
@@ -81,6 +106,7 @@ export class StructureSyncService {
     }
 
     for (const a of adsets) {
+      if (!a?.id) continue;
       await upsertFbAdset({
         adAccountId: cleanId,
         adsetId: a.id,
@@ -92,7 +118,10 @@ export class StructureSyncService {
       });
     }
 
+    const fetchedAdIds = new Set<string>();
     for (const ad of ads) {
+      if (!ad?.id) continue;
+      fetchedAdIds.add(ad.id);
       const storyId = resolveStoryId(ad.creative);
       const postId = extractPostIdFromStory(storyId);
       await upsertFbAdMeta({
@@ -108,16 +137,33 @@ export class StructureSyncService {
       });
     }
 
-    await touchSyncState(cleanId, 'structure', dateStart, dateEnd);
-    if (!incremental) {
-      // 增量返回 0 不代表账户空，dormant 判定只看全量结果
-      await recordStructureResult(cleanId, campaigns.length, adsets.length, ads.length);
-      await refreshAccountTierCache(cleanId);
+    // batch 未返回的广告，用 insights 最小字段兜底
+    for (const row of insightRows) {
+      if (fetchedAdIds.has(row.ad_id)) continue;
+      await upsertFbAdMeta({
+        adAccountId: cleanId,
+        adId: row.ad_id,
+        adsetId: row.adset_id || null,
+        campaignId: row.campaign_id || null,
+        name: row.ad_name || row.ad_id,
+        status: null,
+        creative: null,
+        postId: null,
+        storyId: null,
+      });
     }
+
+    await touchSyncState(cleanId, 'structure', dateStart, dateEnd);
+    await refreshAccountTierCache(cleanId);
+
     console.log(
-      `[StructureSync] account=${cleanId} mode=${incremental ? 'incremental' : 'full'} ` +
-      `campaigns=${campaigns.length} adsets=${adsets.length} ads=${ads.length}`
+      `[StructureSync] account=${cleanId} mode=spend-only ` +
+        `campaigns=${campaigns.length} adsets=${adsets.length} ads=${insightRows.length}`
     );
-    return { campaigns: campaigns.length, adsets: adsets.length, ads: ads.length };
+    return {
+      campaigns: campaigns.length,
+      adsets: adsets.length,
+      ads: insightRows.length,
+    };
   }
 }

@@ -29,6 +29,8 @@ export interface ShoplazzaSpuTopRow {
   addToCartRate: number;
   transformRate: number;
   compositeScore: number;
+  /** 均价 = 总销售额 ÷ 销量，无法计算时为 undefined */
+  price?: number;
   collectionNames: string[];
 }
 
@@ -249,7 +251,7 @@ export class ShoplazzaClient {
     const parsed = list
       .slice(0, candidateLimit)
       .map((row: any, idx: number) => this.parseSpuRow(row, idx + 1, shop.shopDomain));
-    return rankSpuTopRows(parsed, dateStart, finalLimit);
+    return rankSpuTopRows(parsed, dateEnd, finalLimit);
   }
 
   /** 拉取店铺专辑列表；Collections API 403 时从 SPU 报表提取专辑名 */
@@ -325,7 +327,9 @@ export class ShoplazzaClient {
     title?: string
   ): Promise<ShoplazzaCollection[]> {
     const today = todayDateString();
-    const rows = await this.fetchSpuTop(shop, today, today, { limit: 100 });
+    const { spuTopDateRange } = await import('../utils/todayRange');
+    const { dateStart, dateEnd } = spuTopDateRange(today);
+    const rows = await this.fetchSpuTop(shop, dateStart, dateEnd, { limit: 100 });
     const names = new Set<string>();
     for (const row of rows) {
       for (const name of row.collectionNames) {
@@ -486,6 +490,7 @@ export class ShoplazzaClient {
       row.add_cart_client_count_original ?? row.add_cart_client_count ?? row.add_cart_uv
     );
     const viewUsers = this.toInt(row.view_client_count_original ?? row.view_client_count ?? row.uv);
+    const price = this.resolveSpuPriceFromRow(row, orderCount);
 
     return {
       rank,
@@ -500,8 +505,19 @@ export class ShoplazzaClient {
       addToCartRate: calcAddToCartRate(addCartUsers, viewUsers),
       transformRate: calcTransformRate(orderCount, viewUsers),
       compositeScore: 0,
+      price,
       collectionNames,
     };
+  }
+
+  /** 均价 = 总销售额 ÷ 销量（sales_total / order_count） */
+  private resolveSpuPriceFromRow(row: any, orderCount: number): number | undefined {
+    if (orderCount <= 0) return undefined;
+
+    const salesTotal = this.toFloat(row.sales_total_original ?? row.sales_total);
+    if (salesTotal <= 0) return undefined;
+
+    return Math.round((salesTotal / orderCount) * 100) / 100;
   }
 
   private parseProductCreatedAt(row: any): string | null {

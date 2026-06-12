@@ -2,8 +2,9 @@ import { FacebookClient } from './facebookClient';
 import { deleteMultiDayFbAds, upsertFbAd } from '../models/fbAd';
 import { getFbAdsMeta, getFbAdsets } from '../models/fbStructure';
 import { touchSyncState } from '../models/syncState';
+import { fetchAdInsightsWithSpend } from './spendInsightsHelper';
 
-/** 仅 1 次 FB insights(ad) 调用，写入 fb_ads 指标；状态/预算由结构同步负责 */
+/** 仅拉取有 spend 的广告 insights，写入 fb_ads；状态/预算由结构同步负责 */
 export class MetricsSyncService {
   private fbClient: FacebookClient;
   private accessToken: string;
@@ -25,12 +26,13 @@ export class MetricsSyncService {
       console.log(`[MetricsSync] account=${cleanId} removed ${removed} legacy multi-day rows`);
     }
 
-    const insightRows = await this.fbClient.getInsights(cleanId, this.accessToken, {
-      level: 'ad',
-      time_range: { since: dateStart, until: dateEnd },
-      time_increment: 'all_days',
-      limit: 500,
-    });
+    const insightRows = await fetchAdInsightsWithSpend(
+      this.fbClient,
+      cleanId,
+      this.accessToken,
+      dateStart,
+      dateEnd
+    );
 
     const [metaList, adsetList] = await Promise.all([
       getFbAdsMeta(cleanId),
@@ -46,10 +48,7 @@ export class MetricsSyncService {
 
     let synced = 0;
     for (const row of insightRows) {
-      if (!row.ad_id) continue;
       const meta = metaByAd.get(row.ad_id);
-      const spend = parseFloat(row.spend || '0');
-      const cpm = parseFloat(row.cpm || '0');
       const budget = meta?.adset_id ? (budgetByAdset.get(meta.adset_id) ?? 0) : 0;
 
       await upsertFbAd({
@@ -58,9 +57,9 @@ export class MetricsSyncService {
         adName: meta?.name || row.ad_name || row.ad_id,
         postId: meta?.post_id || null,
         storyId: meta?.story_id || null,
-        spend,
+        spend: row.spend,
         budget,
-        cpm,
+        cpm: row.cpm,
         dateStart,
         dateEnd,
       });
@@ -68,7 +67,7 @@ export class MetricsSyncService {
     }
 
     await touchSyncState(cleanId, 'metrics', dateStart, dateEnd);
-    console.log(`[MetricsSync] account=${cleanId} synced=${synced} (insights only)`);
+    console.log(`[MetricsSync] account=${cleanId} synced=${synced} (spend-only insights)`);
     return { synced };
   }
 }

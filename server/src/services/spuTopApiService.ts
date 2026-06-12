@@ -5,9 +5,10 @@ import {
   getSpuTopLatestSyncedAt,
   getSpuTopSyncedAt,
   isManualOrder,
+  isSpuTopSnapshotOutdated,
 } from '../models/shoplazzaSpuTop';
 import { spuTopSyncService } from './spuTopSyncService';
-import { todayDateRange } from '../utils/todayRange';
+import { SPU_TOP_RANGE_DAYS, spuTopDateRange, todayDateRange } from '../utils/todayRange';
 import { normalizeProductImageUrl } from './shoplazzaClient';
 import { computeSpuCompositeScore } from '../utils/spuCompositeScore';
 import { calcAddToCartRate, calcTransformRate } from '../utils/spuMetrics';
@@ -17,6 +18,8 @@ function mapSpuTopRecord(row: any, statDate: string) {
   const addCartUsers = Number(row.add_cart_users) || 0;
   const viewUsers = Number(row.view_users) || 0;
   const productCreatedAt = row.product_created_at || null;
+  const price = Number(row.price) || 0;
+  const scoreDate = row.range_end || statDate;
 
   return {
     id: row.id,
@@ -31,12 +34,14 @@ function mapSpuTopRecord(row: any, statDate: string) {
     viewUsers,
     addToCartRate: calcAddToCartRate(addCartUsers, viewUsers),
     transformRate: calcTransformRate(orderCount, viewUsers),
+    price,
     compositeScore: computeSpuCompositeScore({
       orderCount,
       addCartUsers,
       viewUsers,
       productCreatedAt,
-      statDate,
+      statDate: scoreDate,
+      price,
     }),
   };
 }
@@ -48,9 +53,9 @@ export async function fetchSpuTopBoard(input: {
   triggerSync?: boolean;
 }) {
   const statDate = input.date || todayDateRange().dateStart;
+  const { dateStart: rangeStart, dateEnd: rangeEnd } = spuTopDateRange(statDate);
   const collId = input.collectionId || '';
-  const today = todayDateRange().dateStart;
-  const shouldSync = input.triggerSync === true || (input.triggerSync !== false && statDate === today);
+  const shouldSync = input.triggerSync !== false;
 
   const shops = input.shopId
     ? [await getShopCredentialById(input.shopId)].filter(Boolean)
@@ -63,8 +68,16 @@ export async function fetchSpuTopBoard(input: {
   if (shouldSync) {
     for (const shop of shops) {
       const syncedAt = await getSpuTopSyncedAt(statDate, shop!.shopId, collId);
-      if (spuTopSyncService.isStale(syncedAt)) {
-        // 后台异步同步，不阻塞页面读取
+      const existing =
+        collId || input.shopId
+          ? await getShopSpuTop(statDate, shop!.shopId, collId)
+          : (await getAllShopsSpuTop(statDate, collId)).filter((r) => r.shop_id === shop!.shopId);
+
+      if (
+        spuTopSyncService.isStale(syncedAt) ||
+        existing.length === 0 ||
+        isSpuTopSnapshotOutdated(statDate, existing)
+      ) {
         spuTopSyncService
           .syncShopSpuTop(shop!, statDate, collId, collId || undefined)
           .catch((err: any) => {
@@ -91,6 +104,13 @@ export async function fetchSpuTopBoard(input: {
     });
   }
 
+  let storedRangeStart = rangeStart;
+  let storedRangeEnd = rangeEnd;
+  if (rows.length > 0) {
+    storedRangeStart = rows[0].range_start || rangeStart;
+    storedRangeEnd = rows[0].range_end || rangeEnd;
+  }
+
   for (const row of rows) {
     const bucket = byShop.get(row.shop_id);
     if (bucket) bucket.items.push(mapSpuTopRecord(row, statDate));
@@ -110,6 +130,9 @@ export async function fetchSpuTopBoard(input: {
 
   return {
     statDate,
+    rangeStart: storedRangeStart,
+    rangeEnd: storedRangeEnd,
+    rangeDays: SPU_TOP_RANGE_DAYS,
     collectionId: collId || null,
     latestSyncedAt,
     shops: [...byShop.values()],

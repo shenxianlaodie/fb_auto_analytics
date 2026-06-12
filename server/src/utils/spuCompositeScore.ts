@@ -12,6 +12,8 @@ export interface SpuScoreInput {
   viewUsers: number;
   productCreatedAt: string | null;
   statDate: string;
+  /** 均价（总销售额÷销量），缺失时按 0 计（售价分取最低档 28 分） */
+  price?: number;
 }
 
 function parseDateOnly(value: string): string | null {
@@ -30,26 +32,78 @@ export function daysSinceCreated(productCreatedAt: string | null, statDate: stri
   return Math.max(0, Math.floor((to - from) / 86_400_000));
 }
 
+/** 置信度因子：浏览量低时转化/加购率不可靠 */
+export function computeConfidence(views: number): number {
+  if (views <= 0) return 0;
+  return Math.min(1, Math.pow(views / 40, 0.45));
+}
+
+/** 销量得分 S_sales（满分 100） */
+export function computeSalesScore(sales: number): number {
+  if (sales <= 0) return 0;
+  return 100 * Math.pow(sales / (sales + 4.5), 0.68);
+}
+
+/** 转化率原始得分 S_conv（满分 100，应用置信度前） */
+export function computeConvScoreRaw(convRate: number): number {
+  if (convRate <= 0) return 0;
+  const num = Math.log(1 + convRate / 0.005);
+  const den = Math.log(1 + 0.18 / 0.005);
+  return Math.min(100, (100 * num) / den);
+}
+
+/** 加购率原始得分 S_cart（满分 100，应用置信度前） */
+export function computeCartScoreRaw(cartRate: number): number {
+  if (cartRate <= 0) return 0;
+  const num = Math.log(1 + cartRate / 0.028);
+  const den = Math.log(1 + 0.38 / 0.028);
+  return Math.min(100, (100 * num) / den);
+}
+
+/** 浏览量得分 S_views（满分 100） */
+export function computeViewsScore(views: number): number {
+  if (views <= 0) return 0;
+  return 100 * Math.pow(views / (views + 55), 0.55);
+}
+
+/** 上架时长得分 S_time（满分 100，新品更高） */
+export function computeTimeScore(days: number): number {
+  if (days <= 0) return 100;
+  return 100 * (1 - days / (days + 22));
+}
+
+/** 售价得分 S_price（压缩在 28-72 区间） */
+export function computePriceScore(price: number): number {
+  const p = Math.max(0, price);
+  return 28 + 44 * Math.pow(p / (p + 20), 0.55);
+}
+
 /**
- * 通用版综合分（推荐日常使用）：
- * Score = 1.5×ln(销量+1) + 0.5×ln(浏览+1) + 2.0×转化率 + 0.3×加购率 − 0.02×距今天数
+ * 服装产品综合分（0-100）：
+ * Total = 0.28×S_sales + 0.25×C×S_conv + 0.18×C×S_cart + 0.13×S_views + 0.10×S_time + 0.06×S_price
+ * 其中 C = min(1, (views/40)^0.45)
  */
 export function computeSpuCompositeScore(input: SpuScoreInput): number {
   const sales = Math.max(0, input.orderCount);
   const views = Math.max(0, input.viewUsers);
   const addCart = Math.max(0, input.addCartUsers);
+  const price = Math.max(0, input.price ?? 0);
   const cvr = calcTransformRate(sales, views);
   const cartRate = calcAddToCartRate(addCart, views);
   const days = daysSinceCreated(input.productCreatedAt, input.statDate);
 
-  const score =
-    1.5 * Math.log(sales + 1) +
-    0.5 * Math.log(views + 1) +
-    2.0 * cvr +
-    0.3 * cartRate -
-    0.02 * days;
+  const c = computeConfidence(views);
+  const sSales = computeSalesScore(sales);
+  const sConv = c * computeConvScoreRaw(cvr);
+  const sCart = c * computeCartScoreRaw(cartRate);
+  const sViews = computeViewsScore(views);
+  const sTime = computeTimeScore(days);
+  const sPrice = computePriceScore(price);
 
-  return Math.round(score * 10000) / 10000;
+  const total =
+    0.28 * sSales + 0.25 * sConv + 0.18 * sCart + 0.13 * sViews + 0.1 * sTime + 0.06 * sPrice;
+
+  return Math.round(total * 100) / 100;
 }
 
 export function rankSpuTopRows(
@@ -65,6 +119,7 @@ export function rankSpuTopRows(
       viewUsers: row.viewUsers,
       productCreatedAt: row.productCreatedAt,
       statDate,
+      price: row.price,
     }),
   }));
 

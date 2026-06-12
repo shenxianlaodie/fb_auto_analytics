@@ -11,6 +11,19 @@ import { recordRateLimitEvent } from './fbRateLimitMonitor';
  * 账户级冷却用内存表记录，进程重启即清空（最坏情况：重启后多打一轮）。
  */
 
+/** Token 无法调用 /me（缺权限、已失效、非用户 Token）——轮换下一个 */
+export function isTokenUnavailableError(err: any): boolean {
+  const code = err?.response?.data?.error?.code;
+  const subcode = err?.response?.data?.error?.error_subcode;
+  const message = String(err?.response?.data?.error?.message || '').toLowerCase();
+  return (
+    (code === 100 && subcode === 33) ||
+    code === 190 ||
+    message.includes('an active access token must be used') ||
+    message.includes('error validating access token')
+  );
+}
+
 /** 权限/授权类错误——不应重试，不应冷却 Token */
 export function isPermissionError(err: any): boolean {
   const code = err?.response?.data?.error?.code;

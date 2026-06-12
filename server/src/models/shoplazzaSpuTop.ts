@@ -1,5 +1,6 @@
 import { getPool, query } from './database';
 import { ShoplazzaSpuTopRow } from '../services/shoplazzaClient';
+import { spuTopDateRange, spuTopRetentionCutoff, todayDateString } from '../utils/todayRange';
 
 export interface ShoplazzaSpuTopRecord {
   id: string;
@@ -7,6 +8,8 @@ export interface ShoplazzaSpuTopRecord {
   shop_domain: string;
   shop_name: string | null;
   stat_date: string;
+  range_start: string | null;
+  range_end: string | null;
   collection_id: string;
   collection_title: string | null;
   rank: number;
@@ -21,6 +24,7 @@ export interface ShoplazzaSpuTopRecord {
   add_to_cart_rate: number;
   transform_rate: number;
   composite_score: number;
+  price: number;
   synced_at: string;
 }
 
@@ -29,16 +33,30 @@ export interface ReplaceShopSpuTopInput {
   shopDomain: string;
   shopName: string;
   statDate: string;
+  rangeStart: string;
+  rangeEnd: string;
   collectionId: string;
   collectionTitle?: string;
   rows: ShoplazzaSpuTopRow[];
 }
 
-export async function purgeSpuTopBefore(statDate: string): Promise<number> {
-  const result = await query(
-    `DELETE FROM shoplazza_spu_top WHERE stat_date < $1`,
-    [statDate]
-  );
+/** 快照是否为旧版（无 14 天范围或范围与当前 statDate 不一致） */
+export function isSpuTopSnapshotOutdated(
+  statDate: string,
+  rows: Pick<ShoplazzaSpuTopRecord, 'range_start' | 'range_end'>[]
+): boolean {
+  if (rows.length === 0) return true;
+  const expected = spuTopDateRange(statDate);
+  const sample = rows[0];
+  if (!sample.range_start || !sample.range_end) return true;
+  return sample.range_start !== expected.dateStart || sample.range_end !== expected.dateEnd;
+}
+
+/** 删除超出保留期的历史快照（默认保留近 30 天） */
+export async function purgeSpuTopBefore(anchorDate?: string): Promise<number> {
+  const anchor = anchorDate || todayDateString();
+  const cutoff = spuTopRetentionCutoff(anchor);
+  const result = await query(`DELETE FROM shoplazza_spu_top WHERE stat_date < $1`, [cutoff]);
   return result.length;
 }
 
@@ -56,15 +74,17 @@ export async function replaceShopSpuTop(input: ReplaceShopSpuTopInput): Promise<
     for (const row of input.rows) {
       await client.query(
         `INSERT INTO shoplazza_spu_top
-         (shop_id, shop_domain, shop_name, stat_date, collection_id, collection_title,
+         (shop_id, shop_domain, shop_name, stat_date, range_start, range_end, collection_id, collection_title,
           rank, spu, product_id, title, image_url, product_created_at, order_count, add_cart_users, view_users,
-          add_to_cart_rate, transform_rate, composite_score, synced_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())`,
+          add_to_cart_rate, transform_rate, composite_score, price, synced_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NOW())`,
         [
           input.shopId,
           input.shopDomain,
           input.shopName,
           input.statDate,
+          input.rangeStart,
+          input.rangeEnd,
           input.collectionId,
           input.collectionTitle ?? null,
           row.rank,
@@ -79,6 +99,7 @@ export async function replaceShopSpuTop(input: ReplaceShopSpuTopInput): Promise<
           row.addToCartRate,
           row.transformRate,
           row.compositeScore ?? 0,
+          row.price ?? 0,
         ]
       );
     }
@@ -201,7 +222,6 @@ export async function reorderShopSpuTop(
       }
     }
 
-    // 两阶段更新，避免 UNIQUE(shop_id, stat_date, collection_id, rank) 冲突
     await client.query(
       `UPDATE shoplazza_spu_top SET rank = rank + 10000
        WHERE shop_id = $1 AND stat_date = $2 AND collection_id = $3`,
@@ -239,12 +259,15 @@ export async function mergeShopSpuTopMetrics(input: ReplaceShopSpuTopInput): Pro
          title = COALESCE($5, title),
          image_url = COALESCE($6, image_url),
          product_created_at = COALESCE($7, product_created_at),
-         order_count = $8,
-         add_cart_users = $9,
-         view_users = $10,
-         add_to_cart_rate = $11,
-         transform_rate = $12,
-         composite_score = $13,
+         range_start = $8,
+         range_end = $9,
+         order_count = $10,
+         add_cart_users = $11,
+         view_users = $12,
+         add_to_cart_rate = $13,
+         transform_rate = $14,
+         composite_score = $15,
+         price = $16,
          synced_at = NOW()
        WHERE shop_id = $1 AND stat_date = $2 AND collection_id = $3 AND spu = $4`,
       [
@@ -255,12 +278,15 @@ export async function mergeShopSpuTopMetrics(input: ReplaceShopSpuTopInput): Pro
         row.title || null,
         row.imageUrl || null,
         row.productCreatedAt,
+        input.rangeStart,
+        input.rangeEnd,
         row.orderCount,
         row.addCartUsers,
         row.viewUsers,
         row.addToCartRate,
         row.transformRate,
         row.compositeScore ?? 0,
+        row.price ?? 0,
       ]
     );
   }
