@@ -125,6 +125,7 @@ export class FacebookClient {
         return response.data;
       } catch (err: any) {
         recordUsageHeaders(edge, err.response?.headers);
+        console.error('[FB API Error] edge:', edge, 'status:', err.response?.status, 'body:', JSON.stringify(err.response?.data?.error));
         throw err;
       }
     });

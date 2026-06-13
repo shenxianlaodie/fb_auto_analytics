@@ -3,7 +3,7 @@ import type { ColumnsType } from 'antd/es/table';
 
 export type TableLevel = 'campaign' | 'adset' | 'ad';
 
-export const PINNED_LEFT_KEYS = ['name'];
+export const PINNED_LEFT_KEYS = ['_expand', 'name'];
 export const PINNED_RIGHT_KEYS = ['actions'];
 
 export const DEFAULT_COLUMN_ORDERS: Record<TableLevel, string[]> = {

@@ -209,6 +209,36 @@ export async function getShoplazzaUtmCampaignRows(
   );
 }
 
+/** 账户广告关联的 utm_content 按天明细（不做跨天汇总） */
+export async function getShoplazzaUtmDailyForAccount(
+  adAccountId: string,
+  dateStart: string,
+  dateEnd: string,
+  shopId?: string
+): Promise<ShoplazzaUtmRecord[]> {
+  const dateFilter = `u.date_start >= $${shopId ? 3 : 2} AND u.date_end <= $${shopId ? 4 : 3} AND u.date_start = u.date_end`;
+  if (shopId) {
+    return query(
+      `SELECT u.* FROM shoplazza_utm u
+       INNER JOIN fb_ads_meta m
+         ON m.ad_id = u.utm_value AND m.ad_account_id = $1
+       WHERE u.shop_id = $2 AND ${dateFilter}
+         AND u.dimension = 'utm_content'
+       ORDER BY u.date_start DESC, u.sales DESC`,
+      [adAccountId, shopId, dateStart, dateEnd]
+    );
+  }
+  return query(
+    `SELECT u.* FROM shoplazza_utm u
+     INNER JOIN fb_ads_meta m
+       ON m.ad_id = u.utm_value AND m.ad_account_id = $1
+     WHERE ${dateFilter}
+       AND u.dimension = 'utm_content'
+     ORDER BY u.date_start DESC, u.sales DESC`,
+    [adAccountId, dateStart, dateEnd]
+  );
+}
+
 export async function getShoplazzaUtmByDateRange(
   dateStart: string,
   dateEnd: string,

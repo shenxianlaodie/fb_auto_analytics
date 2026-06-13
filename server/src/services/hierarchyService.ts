@@ -1,8 +1,15 @@
-import { getFbAdsByDateRange } from '../models/fbAd';
+import { getFbAdsByDateRange, getFbAdsDailyByDateRange, getDailySpendByEntity } from '../models/fbAd';
 import { getFbCampaigns, getFbAdsets, getFbAdsMeta, FbAdMetaRecord } from '../models/fbStructure';
-import { getShoplazzaUtmForAccount, getShoplazzaUtmCampaignRows, ShoplazzaUtmRecord } from '../models/shoplazzaUtm';
+import { getShoplazzaUtmForAccount, getShoplazzaUtmCampaignRows, getShoplazzaUtmDailyForAccount, ShoplazzaUtmRecord } from '../models/shoplazzaUtm';
 import { getLatestSyncMeta } from '../models/syncState';
 import { todayDateRange } from '../utils/todayRange';
+import {
+  buildAdDailyMetricsMap,
+  buildEntityDailyBreakdown,
+  buildEntityDailySpendMap,
+  dailyBreakdownForAd,
+  isMultiDayRange,
+} from './dailyBreakdownHelper';
 
 interface RollupMetrics {
   spend: number;
@@ -130,9 +137,11 @@ export class HierarchyService {
     accountId: string,
     dateStart: string,
     dateEnd: string,
-    shopId?: string
+    shopId?: string,
+    breakdown?: string
   ) {
     const cleanId = accountId.replace('act_', '');
+    const withDailyBreakdown = breakdown === 'day' && isMultiDayRange(dateStart, dateEnd);
 
     const [campaigns, adsets, adsMeta, fbAds, utmRows, utmCampaignRows, syncMeta] = await Promise.all([
       getFbCampaigns(cleanId),
@@ -143,6 +152,21 @@ export class HierarchyService {
       getShoplazzaUtmCampaignRows(dateStart, dateEnd, shopId),
       getLatestSyncMeta(cleanId, dateStart, dateEnd, shopId || ''),
     ]);
+
+    let adDailyMap: ReturnType<typeof buildAdDailyMetricsMap> | null = null;
+    let campaignDailySpendMap: ReturnType<typeof buildEntityDailySpendMap> | null = null;
+    let adsetDailySpendMap: ReturnType<typeof buildEntityDailySpendMap> | null = null;
+    if (withDailyBreakdown) {
+      const [fbAdsDaily, utmDaily, campaignDailySpend, adsetDailySpend] = await Promise.all([
+        getFbAdsDailyByDateRange(cleanId, dateStart, dateEnd),
+        getShoplazzaUtmDailyForAccount(cleanId, dateStart, dateEnd, shopId),
+        getDailySpendByEntity(cleanId, dateStart, dateEnd, 'campaign'),
+        getDailySpendByEntity(cleanId, dateStart, dateEnd, 'adset'),
+      ]);
+      adDailyMap = buildAdDailyMetricsMap(fbAdsDaily, utmDaily);
+      campaignDailySpendMap = buildEntityDailySpendMap(campaignDailySpend);
+      adsetDailySpendMap = buildEntityDailySpendMap(adsetDailySpend);
+    }
 
     const metricsByAd = new Map(
       fbAds.map((a) => [a.ad_id, { spend: Number(a.spend), cpm: Number(a.cpm), budget: Number(a.budget) }])
@@ -174,6 +198,9 @@ export class HierarchyService {
         utmSales: Number(utmRow?.sales) || 0,
         utmMatched: !!utmRow,
         utmCampaign: utmCampaignRow?.utm_value ?? null,
+        ...(adDailyMap
+          ? { dailyBreakdown: dailyBreakdownForAd(meta.ad_id, adDailyMap, dateStart, dateEnd) }
+          : {}),
       };
     });
 
@@ -218,6 +245,18 @@ export class HierarchyService {
         lifetime_budget: a.lifetime_budget,
         spend: rollup.spend,
         cpm: rollup.cpm,
+        ...(adDailyMap && adsetDailySpendMap
+          ? {
+              dailyBreakdown: buildEntityDailyBreakdown(
+                a.adset_id,
+                childAds.map((ad) => ad.id),
+                adsetDailySpendMap,
+                adDailyMap,
+                dateStart,
+                dateEnd
+              ),
+            }
+          : {}),
       };
     });
 
@@ -239,6 +278,18 @@ export class HierarchyService {
         lifetime_budget: null,
         spend: rollup.spend,
         cpm: rollup.cpm,
+        ...(adDailyMap && adsetDailySpendMap
+          ? {
+              dailyBreakdown: buildEntityDailyBreakdown(
+                adsetId,
+                childAds.map((ad) => ad.id),
+                adsetDailySpendMap,
+                adDailyMap,
+                dateStart,
+                dateEnd
+              ),
+            }
+          : {}),
       });
       knownAdsetIds.add(adsetId);
     }
@@ -264,6 +315,18 @@ export class HierarchyService {
         lifetime_budget: c.lifetime_budget,
         spend: rollup.spend,
         cpm: rollup.cpm,
+        ...(adDailyMap && campaignDailySpendMap
+          ? {
+              dailyBreakdown: buildEntityDailyBreakdown(
+                c.campaign_id,
+                childAds.map((ad) => ad.id),
+                campaignDailySpendMap,
+                adDailyMap,
+                dateStart,
+                dateEnd
+              ),
+            }
+          : {}),
       };
     });
 
@@ -285,6 +348,7 @@ export class HierarchyService {
         dateStart,
         dateEnd,
         timezone: 'UTC+8',
+        breakdown: withDailyBreakdown ? 'day' : undefined,
         syncWarnings: buildSyncWarnings(syncMeta, dateStart, dateEnd, fbAds.length > 0, shopId),
         matched: { total: ads.length, matched: matchedCount, unmatched: ads.length - matchedCount },
         spendSummary: {

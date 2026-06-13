@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Breadcrumb, Button, DatePicker, Dropdown, Input, Popconfirm, Space, Table, Tabs, Tag, Typography, message,
+  Alert, Breadcrumb, Button, DatePicker, Dropdown, Input, Popconfirm, Select, Space, Table, Tabs, Tag, Typography, message,
 } from 'antd';
 import {
   ArrowLeftOutlined, CloseOutlined, DeleteOutlined, FileTextOutlined, PlusOutlined, ReloadOutlined, SearchOutlined,
@@ -16,11 +16,12 @@ import { applyColumnOrder } from '../../utils/columnOrder';
 import { ColumnOrderSettings } from '../../components/AdsManager/ColumnOrderSettings';
 import { EmptyState } from '../../components/Common/EmptyState';
 import { useHierarchy } from './useHierarchy';
-import { adsetIdOf, campaignIdOf, filterHierarchy } from './helpers';
+import { adsetIdOf, campaignIdOf, filterHierarchy, type BudgetKind } from './helpers';
 import { buildAdColumns, buildAdsetColumns, buildCampaignColumns } from './columns';
 import { EditModal, EditTarget } from './EditModal';
 import { CopyModal, CopyOptions, CopyTarget } from './CopyModal';
 import { BulkActionBar } from './BulkActionBar';
+import { flattenWithDailyBreakdown, isMultiDayRange } from './dailyBreakdown';
 
 const { RangePicker } = DatePicker;
 const { Title } = Typography;
@@ -52,7 +53,7 @@ export const AdsManager: React.FC = () => {
     await api.delete(`/drafts/${id}`);
     loadDrafts();
   };
-  const { dateRange, setDateRange } = useUIStore();
+  const { dateRange, setDateRange, timeBreakdown, setTimeBreakdown } = useUIStore();
   const {
     activeTab, selected, drill, setActiveTab, setSelected, clearSelected,
     enterCampaign, enterAdset, exitToRoot, exitToCampaign, setDrill,
@@ -66,10 +67,28 @@ export const AdsManager: React.FC = () => {
   const [searchAdId, setSearchAdId] = useState('');
   const [searchName, setSearchName] = useState('');
   const [editingBudget, setEditingBudget] = useState<{ id: string; type: string } | null>(null);
+  const [tablePageSize, setTablePageSize] = useState(20);
   const [editTarget, setEditTarget] = useState<EditTarget | null>(null);
   const [copyTarget, setCopyTarget] = useState<CopyTarget | null>(null);
   const [bulkLoading, setBulkLoading] = useState(false);
   const [copySubmitting, setCopySubmitting] = useState(false);
+  const [expandedDailyKeys, setExpandedDailyKeys] = useState<string[]>([]);
+
+  const multiDay = isMultiDayRange(dateRange[0], dateRange[1]);
+  const dailyBreakdownActive = timeBreakdown === 'day' && multiDay;
+
+  useEffect(() => {
+    if (!multiDay && timeBreakdown === 'day') {
+      setTimeBreakdown('none');
+    }
+    setExpandedDailyKeys([]);
+  }, [dateRange[0], dateRange[1], multiDay, setTimeBreakdown]);
+
+  const toggleDailyExpand = useCallback((id: string) => {
+    setExpandedDailyKeys((keys) =>
+      keys.includes(id) ? keys.filter((k) => k !== id) : [...keys, id],
+    );
+  }, []);
 
   const drillToCampaign = useCallback((id: string, name: string) => {
     enterCampaign(id, name);
@@ -239,9 +258,17 @@ export const AdsManager: React.FC = () => {
     }
   };
 
-  const handleUpdateBudget = async (type: 'campaign' | 'adset', id: string, budgetCents: number) => {
+  const handleUpdateBudget = async (
+    type: 'campaign' | 'adset',
+    id: string,
+    budgetCents: number,
+    kind: BudgetKind,
+  ) => {
     try {
-      await api.put(`${PUT_ENDPOINT[type]}/${id}`, { budget: { daily: budgetCents } });
+      const budget = kind === 'lifetime'
+        ? { lifetime: budgetCents }
+        : { daily: budgetCents };
+      await api.put(`${PUT_ENDPOINT[type]}/${id}`, { budget });
       message.success('预算已更新');
       reload();
     } catch (err: any) {
@@ -321,44 +348,73 @@ export const AdsManager: React.FC = () => {
         drillToAdset(record.id, record.name, cid, campaign?.name);
       }
     },
+    timeBreakdown: dailyBreakdownActive ? 'day' as const : 'none' as const,
+    expandedKeys: expandedDailyKeys,
+    onToggleExpand: toggleDailyExpand,
   };
+
+  const withDailyRows = (rows: any[]) =>
+    dailyBreakdownActive
+      ? flattenWithDailyBreakdown(rows, expandedDailyKeys, dateRange[0], dateRange[1])
+      : rows;
 
   const campaignColumns = useMemo(
     () => applyColumnOrder(buildCampaignColumns(columnsCtx), columnOrders.campaign),
-    [filtered.ads, editingBudget, columnOrders.campaign, campaigns, drillToCampaign, drillToAdset],
+    [
+      filtered.ads, editingBudget, columnOrders.campaign, campaigns,
+      dailyBreakdownActive, expandedDailyKeys, toggleDailyExpand,
+    ],
   );
   const adsetColumns = useMemo(
     () => applyColumnOrder(buildAdsetColumns(columnsCtx), columnOrders.adset),
-    [filtered.ads, editingBudget, columnOrders.adset, campaigns, drillToCampaign, drillToAdset],
+    [
+      filtered.ads, editingBudget, columnOrders.adset, campaigns,
+      dailyBreakdownActive, expandedDailyKeys, toggleDailyExpand,
+    ],
   );
   const adColumns = useMemo(
     () => applyColumnOrder(buildAdColumns(columnsCtx), columnOrders.ad),
-    [filtered.ads, editingBudget, columnOrders.ad, campaigns, drillToCampaign, drillToAdset],
+    [
+      filtered.ads, editingBudget, columnOrders.ad, campaigns,
+      dailyBreakdownActive, expandedDailyKeys, toggleDailyExpand,
+    ],
   );
 
   const renderTable = (level: Level, columns: any[], data: any[]) => (
     <Table
+      key={dailyBreakdownActive ? `daily-${level}` : level}
       columns={columns}
-      dataSource={data}
+      dataSource={withDailyRows(data)}
       rowKey="id"
       loading={loading}
       size="middle"
       scroll={{ x: 1800 }}
+      showSorterTooltip={!dailyBreakdownActive}
       rowSelection={{
         selectedRowKeys: selected[level],
         onChange: (keys) => setSelected(level, keys as string[]),
+        renderCell: (_checked, record, _index, originNode) =>
+          record._isDailyRow ? null : originNode,
       }}
-      rowClassName={(record: any) =>
-        level === 'ad' && record.utmMatched === false && Number(record.spend) > 0
-          ? 'utm-unmatched-row' : ''
-      }
+      rowClassName={(record: any) => {
+        if (record._isDailyRow) return 'ads-daily-breakdown-row';
+        if (level === 'ad' && record.utmMatched === false && Number(record.spend) > 0) {
+          return 'utm-unmatched-row';
+        }
+        return '';
+      }}
       locale={{
         emptyText: level === 'campaign'
           ? <EmptyState title="暂无广告系列" description="点击右上角创建" actionText="创建"
               onAction={() => navigate('/ads/create')} />
           : '暂无数据',
       }}
-      pagination={{ pageSize: 20, showSizeChanger: true }}
+      pagination={{
+        pageSize: tablePageSize,
+        showSizeChanger: true,
+        pageSizeOptions: ['10', '20', '50', '100'],
+        onShowSizeChange: (_current, size) => setTablePageSize(size),
+      }}
     />
   );
 
@@ -442,6 +498,24 @@ export const AdsManager: React.FC = () => {
           }}
           allowClear={false}
         />
+        <Select
+          value={timeBreakdown}
+          onChange={setTimeBreakdown}
+          style={{ width: 140 }}
+          options={[
+            { value: 'none', label: '细分：无' },
+            { value: 'day', label: '细分：单日', disabled: !multiDay },
+          ]}
+        />
+        {!multiDay ? (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            选择多日范围后可按单日细分
+          </Typography.Text>
+        ) : (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            点击行首 ▶ 展开每日数据
+          </Typography.Text>
+        )}
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>时区 UTC+8</Typography.Text>
         <Input
           allowClear

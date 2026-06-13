@@ -15,6 +15,8 @@ const OBJECTIVES: Record<string, string> = {
 
 const LEVEL_LABEL: Record<Level, string> = { campaign: '广告系列', adset: '广告组', ad: '广告' };
 
+interface FbPage { id: string; name: string; pictureUrl: string | null }
+
 export interface EditTarget {
   level: Level;
   record: any | null;       // null = 创建
@@ -34,7 +36,18 @@ export function EditModal({
 }) {
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+  const [pages, setPages] = useState<FbPage[]>([]);
+  const [pagesLoading, setPagesLoading] = useState(false);
   const editing = !!target?.record;
+
+  useEffect(() => {
+    if (!target || target.level !== 'ad' || target.record) return;
+    setPagesLoading(true);
+    api.get('/meta/pages')
+      .then((resp) => setPages(resp.data || []))
+      .catch((err) => message.warning(err.response?.data?.error || '主页列表加载失败'))
+      .finally(() => setPagesLoading(false));
+  }, [target]);
 
   useEffect(() => {
     if (!target) return;
@@ -84,6 +97,7 @@ export function EditModal({
             accountId, adsetId: parentId, name: values.name,
             creative: {
               title: values.headline, body: values.body_text || '',
+              pageId: values.pageId,
               imageUrl: values.image_url, linkUrl: values.link,
               callToAction: values.cta || 'SHOP_NOW',
             },
@@ -129,13 +143,20 @@ export function EditModal({
         )}
         {target?.level === 'ad' && !editing && (
           <>
+            <Form.Item name="pageId" label="Facebook 主页" rules={[{ required: true, message: '请选择 Facebook 主页' }]}>
+              <Select
+                loading={pagesLoading}
+                placeholder="选择主页"
+                options={pages.map((p) => ({ value: p.id, label: p.name }))}
+              />
+            </Form.Item>
             <Form.Item name="headline" label="广告标题" rules={[{ required: true }]}>
               <Input maxLength={40} showCount />
             </Form.Item>
             <Form.Item name="body_text" label="正文">
               <Input.TextArea rows={2} maxLength={500} />
             </Form.Item>
-            <Form.Item name="image_url" label="图片链接">
+            <Form.Item name="image_url" label="图片链接" rules={[{ required: true, message: '请输入图片链接' }]}>
               <Input placeholder="https://..." />
             </Form.Item>
             <Form.Item name="link" label="目标链接" rules={[{ required: true }]}>

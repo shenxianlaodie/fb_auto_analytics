@@ -61,9 +61,28 @@ export function cmpNum(a: number, b: number): number {
   return (a || 0) - (b || 0);
 }
 
+export type BudgetKind = 'daily' | 'lifetime';
+
 export function parseBudget(r: { daily_budget?: string; lifetime_budget?: string }): number {
   const b = r.daily_budget || r.lifetime_budget;
   return b ? parseInt(b, 10) / 100 : 0;
+}
+
+export function getBudgetKind(r: { daily_budget?: string; lifetime_budget?: string }): BudgetKind {
+  const daily = r.daily_budget ? parseInt(r.daily_budget, 10) : 0;
+  if (daily > 0) return 'daily';
+  const lifetime = r.lifetime_budget ? parseInt(r.lifetime_budget, 10) : 0;
+  if (lifetime > 0) return 'lifetime';
+  return 'daily';
+}
+
+export function formatBudgetUsd(amount: number): string {
+  if (!amount || amount <= 0) return '-';
+  return `$${amount.toFixed(2)}`;
+}
+
+export function usdToCents(usd: number): number {
+  return Math.round(usd * 100);
 }
 
 export function campaignIdOf(r: any): string {

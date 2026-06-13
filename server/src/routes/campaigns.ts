@@ -3,7 +3,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { CampaignService } from '../services/campaignService';
 import { upsertFbCampaign, writeBackCampaign } from '../models/fbStructure';
 import { FacebookClient } from '../services/facebookClient';
-import { fbErrorMessage } from '../utils/fbError';
+import { sendFbError } from '../utils/fbError';
 
 export const campaignsRouter = Router();
 campaignsRouter.use(authMiddleware);
@@ -20,7 +20,7 @@ campaignsRouter.get('/', async (req: AuthRequest, res: Response) => {
     );
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendFbError(res, err);
   }
 });
 
@@ -31,7 +31,7 @@ campaignsRouter.get('/:id', async (req: AuthRequest, res: Response) => {
     const result = await service.getCampaign(req.params.id);
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendFbError(res, err);
   }
 });
 
@@ -62,7 +62,7 @@ campaignsRouter.post('/', async (req: AuthRequest, res: Response) => {
     });
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: fbErrorMessage(err) });
+    sendFbError(res, err);
   }
 });
 
@@ -76,10 +76,11 @@ campaignsRouter.put('/:id', async (req: AuthRequest, res: Response) => {
     await writeBackCampaign(req.params.id, {
       status,
       dailyBudgetCents: budget?.daily,
+      lifetimeBudgetCents: budget?.lifetime,
     });
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendFbError(res, err);
   }
 });
 
@@ -90,7 +91,7 @@ campaignsRouter.delete('/:id', async (req: AuthRequest, res: Response) => {
     await service.deleteCampaign(req.params.id);
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendFbError(res, err);
   }
 });
 
@@ -109,6 +110,6 @@ campaignsRouter.post('/:id/copy', async (req: AuthRequest, res: Response) => {
     }
     res.json({ success: true, copies });
   } catch (err: any) {
-    res.status(500).json({ error: fbErrorMessage(err) });
+    sendFbError(res, err);
   }
 });
