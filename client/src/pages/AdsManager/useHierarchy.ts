@@ -24,7 +24,7 @@ export interface SyncMeta {
 
 export function useHierarchy() {
   const { accountId, accountName } = useAccountStore();
-  const { dateRange } = useUIStore();
+  const { dateRange, timeBreakdown } = useUIStore();
   const [campaigns, setCampaigns] = useState<any[]>([]);
   const [adsets, setAdsets] = useState<any[]>([]);
   const [ads, setAds] = useState<any[]>([]);
@@ -45,12 +45,18 @@ export function useHierarchy() {
     if (!accountId) return;
     const reqId = requestIdRef.current;
     const resp = await api.get('/analytics/hierarchy', {
-      params: { accountId, accountName, dateStart: dateRange[0], dateEnd: dateRange[1] },
+      params: {
+        accountId,
+        accountName,
+        dateStart: dateRange[0],
+        dateEnd: dateRange[1],
+        ...(timeBreakdown === 'day' ? { breakdown: 'day' } : {}),
+      },
     });
     if (reqId === requestIdRef.current) {
       applyHierarchy(resp.data);
     }
-  }, [accountId, accountName, dateRange]);
+  }, [accountId, accountName, dateRange, timeBreakdown]);
 
   /** 静默读库（创建/编辑/复制成功后调用） */
   const reload = useCallback(async () => {
@@ -75,7 +81,7 @@ export function useHierarchy() {
     setSyncMeta(null);
     if (accountId) reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, dateRange[0], dateRange[1]]);
+  }, [accountId, dateRange[0], dateRange[1], timeBreakdown]);
 
   // 60 秒轮询读库
   useEffect(() => {
@@ -89,7 +95,7 @@ export function useHierarchy() {
         pollRef.current = null;
       }
     };
-  }, [accountId, dateRange, loadHierarchy]);
+  }, [accountId, dateRange, timeBreakdown, loadHierarchy]);
 
   // 切回标签页时读库
   useEffect(() => {
@@ -110,6 +116,7 @@ export function useHierarchy() {
     try {
       const resp = await api.post('/analytics/refresh', {
         accountId, accountName, dateStart: dateRange[0], dateEnd: dateRange[1], force: true,
+        ...(timeBreakdown === 'day' ? { breakdown: 'day' } : {}),
       });
       if (reqId === requestIdRef.current) {
         applyHierarchy(resp.data);
@@ -121,7 +128,13 @@ export function useHierarchy() {
         await new Promise((r) => setTimeout(r, 5000));
         if (reqId !== requestIdRef.current) break;
         const poll = await api.get('/analytics/hierarchy', {
-          params: { accountId, accountName, dateStart: dateRange[0], dateEnd: dateRange[1] },
+          params: {
+            accountId,
+            accountName,
+            dateStart: dateRange[0],
+            dateEnd: dateRange[1],
+            ...(timeBreakdown === 'day' ? { breakdown: 'day' } : {}),
+          },
         });
         if (reqId !== requestIdRef.current) break;
         applyHierarchy(poll.data);
@@ -142,7 +155,7 @@ export function useHierarchy() {
         setLoading(false);
       }
     }
-  }, [accountId, accountName, dateRange]);
+  }, [accountId, accountName, dateRange, timeBreakdown]);
 
   return { campaigns, adsets, ads, loading, syncMeta, reload, refresh };
 }

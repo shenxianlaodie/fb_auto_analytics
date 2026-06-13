@@ -39,7 +39,7 @@ export function parseAdSpendInsightRows(rows: any[]): AdSpendInsightRow[] {
   return out;
 }
 
-/** 拉取日期范围内有花费的广告 insights（1 次分页 API，带 spend>0 过滤） */
+/** 拉取日期范围内有花费的广告 insights（按天返回，便于入库与按日细分） */
 export async function fetchAdInsightsWithSpend(
   fbClient: FacebookClient,
   accountId: string,
@@ -52,7 +52,7 @@ export async function fetchAdInsightsWithSpend(
     level: 'ad',
     fields: AD_INSIGHT_FIELDS,
     time_range: { since: dateStart, until: dateEnd },
-    time_increment: 'all_days',
+    time_increment: 1,
     filtering: INSIGHTS_SPEND_FILTER,
     limit: 500,
   });

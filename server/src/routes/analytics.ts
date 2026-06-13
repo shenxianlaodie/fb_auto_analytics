@@ -78,7 +78,7 @@ function enqueueHotRefresh(input: {
 // GET /api/analytics/hierarchy — DB-First 立即返回；同时标记账户活跃并触发 TTL 门控的后台热同步
 analyticsRouter.get('/hierarchy', async (req: AuthRequest, res: Response) => {
   try {
-    const { accountId, accountName, dateStart, dateEnd, shopId, shopDomain } = req.query;
+    const { accountId, accountName, dateStart, dateEnd, shopId, shopDomain, breakdown } = req.query;
     if (!accountId) {
       res.status(400).json({ error: '缺少 accountId' });
       return;
@@ -107,7 +107,8 @@ analyticsRouter.get('/hierarchy', async (req: AuthRequest, res: Response) => {
       accountId as string,
       range.dateStart,
       range.dateEnd,
-      resolvedShopId
+      resolvedShopId,
+      breakdown as string | undefined
     );
 
     res.json(result);
@@ -169,7 +170,7 @@ analyticsRouter.get('/cross-account', async (req: AuthRequest, res: Response) =>
 // POST /api/analytics/refresh — 立即返回 DB 数据，后台按 TTL 同步
 analyticsRouter.post('/refresh', async (req: AuthRequest, res: Response) => {
   try {
-    const { accountId, accountName, dateStart, dateEnd, shopId, shopDomain, force } = req.body;
+    const { accountId, accountName, dateStart, dateEnd, shopId, shopDomain, force, breakdown } = req.body;
     if (!accountId) {
       res.status(400).json({ error: '缺少 accountId' });
       return;
@@ -216,7 +217,8 @@ analyticsRouter.post('/refresh', async (req: AuthRequest, res: Response) => {
       accountId,
       range.dateStart,
       range.dateEnd,
-      resolvedShopId
+      resolvedShopId,
+      breakdown
     );
 
     res.json({ ...result, refreshEnqueued: true });

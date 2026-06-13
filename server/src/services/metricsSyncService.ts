@@ -50,6 +50,8 @@ export class MetricsSyncService {
     for (const row of insightRows) {
       const meta = metaByAd.get(row.ad_id);
       const budget = meta?.adset_id ? (budgetByAdset.get(meta.adset_id) ?? 0) : 0;
+      const dayStart = row.date_start || dateStart;
+      const dayEnd = row.date_stop || row.date_start || dateEnd;
 
       await upsertFbAd({
         adAccountId: cleanId,
@@ -60,8 +62,8 @@ export class MetricsSyncService {
         spend: row.spend,
         budget,
         cpm: row.cpm,
-        dateStart,
-        dateEnd,
+        dateStart: dayStart,
+        dateEnd: dayEnd,
       });
       synced++;
     }

@@ -3,7 +3,8 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { AdSetService } from '../services/adSetService';
 import { writeBackAdset } from '../models/fbStructure';
 import { FacebookClient } from '../services/facebookClient';
-import { fbErrorMessage } from '../utils/fbError';
+import { sendFbError } from '../utils/fbError';
+import { validateCreateAdSet } from '../utils/adValidators';
 
 export const adsetsRouter = Router();
 adsetsRouter.use(authMiddleware);
@@ -23,7 +24,7 @@ adsetsRouter.get('/', async (req: AuthRequest, res: Response) => {
     res.json(result);
   } catch (err: any) {
     console.error('[AdSets] Error:', err.message);
-    res.status(500).json({ error: err.message });
+    sendFbError(res, err);
   }
 });
 
@@ -33,12 +34,17 @@ adsetsRouter.get('/:id', async (req: AuthRequest, res: Response) => {
     const result = await service.getAdSet(req.params.id);
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendFbError(res, err);
   }
 });
 
 adsetsRouter.post('/', async (req: AuthRequest, res: Response) => {
   try {
+    const validationError = validateCreateAdSet(req.body);
+    if (validationError) {
+      res.status(400).json({ error: validationError });
+      return;
+    }
     const { accountId, campaignId, name, targeting, budget, bidStrategy, status, startTime, endTime } = req.body;
     const service = new AdSetService(req.accessToken!);
     const result = await service.createAdSet(accountId, {
@@ -53,7 +59,7 @@ adsetsRouter.post('/', async (req: AuthRequest, res: Response) => {
     });
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendFbError(res, err);
   }
 });
 
@@ -70,7 +76,7 @@ adsetsRouter.put('/:id', async (req: AuthRequest, res: Response) => {
     });
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({ error: fbErrorMessage(err) });
+    sendFbError(res, err);
   }
 });
 
@@ -80,7 +86,7 @@ adsetsRouter.delete('/:id', async (req: AuthRequest, res: Response) => {
     await service.deleteAdSet(req.params.id);
     res.json({ success: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    sendFbError(res, err);
   }
 });
 
@@ -97,6 +103,6 @@ adsetsRouter.post('/:id/copy', async (req: AuthRequest, res: Response) => {
     }
     res.json({ success: true, copies });
   } catch (err: any) {
-    res.status(500).json({ error: fbErrorMessage(err) });
+    sendFbError(res, err);
   }
 });

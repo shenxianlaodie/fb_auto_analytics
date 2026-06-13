@@ -60,8 +60,8 @@ export async function upsertDingTalkUser(data: {
   avatar?: string;
 }): Promise<User> {
   const result = await queryOne(
-    `INSERT INTO users (dingtalk_user_id, name, email, avatar)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO users (dingtalk_user_id, name, email, avatar, role, allowed_accounts)
+     VALUES ($1, $2, $3, $4, 'viewer', '{}')
      ON CONFLICT (dingtalk_user_id)
      DO UPDATE SET
        name = COALESCE(EXCLUDED.name, users.name),

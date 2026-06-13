@@ -1,8 +1,7 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Table, Button, Modal, Select, Tag, Space, message, Typography } from 'antd';
 import { ReloadOutlined, EditOutlined } from '@ant-design/icons';
 import api from '../services/api';
-import { useAccountStore } from '../store/accountStore';
 
 interface DingTalkUser {
   id: string;
@@ -15,25 +14,61 @@ interface DingTalkUser {
   updated_at: string;
 }
 
+interface AccountOption {
+  id: string;
+  name: string;
+  account_id: string;
+}
+
+function accountsLabel(role: string): string {
+  return role === 'admin'
+    ? '可访问广告账户（不选 = 全部账户）'
+    : '可访问广告账户（不选 = 无广告权限）';
+}
+
+function renderAllowedAccounts(role: string, arr: string[] | null | undefined) {
+  if (!arr || arr.length === 0) {
+    if (role === 'admin') return <Tag>全部</Tag>;
+    return <Tag color="default">无权限</Tag>;
+  }
+  return arr.map((a) => (
+    <Tag key={a} style={{ marginBottom: 4 }}>{a.replace(/^act_/, '')}</Tag>
+  ));
+}
+
 export const UserManagement: React.FC = () => {
   const [users, setUsers] = useState<DingTalkUser[]>([]);
   const [loading, setLoading] = useState(false);
   const [editUser, setEditUser] = useState<DingTalkUser | null>(null);
   const [editRole, setEditRole] = useState<string>('viewer');
   const [editAccounts, setEditAccounts] = useState<string[]>([]);
-  const { accounts } = useAccountStore();
+  const [accountOptions, setAccountOptions] = useState<AccountOption[]>([]);
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
     try {
       const resp = await api.get('/users');
       setUsers(resp.data.data || []);
-    } catch (err: any) {
+    } catch {
       message.error('获取用户列表失败');
-    } finally { setLoading(false); }
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  useEffect(() => { fetchUsers(); }, [fetchUsers]);
+  const fetchAccountOptions = useCallback(async () => {
+    try {
+      const resp = await api.get('/users/account-options');
+      setAccountOptions(resp.data.data || []);
+    } catch {
+      message.error('获取广告账户列表失败');
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchUsers();
+    fetchAccountOptions();
+  }, [fetchUsers, fetchAccountOptions]);
 
   const openEdit = (user: DingTalkUser) => {
     setEditUser(user);
@@ -48,28 +83,35 @@ export const UserManagement: React.FC = () => {
       message.success('已更新');
       setEditUser(null);
       fetchUsers();
-    } catch (err: any) {
+    } catch {
       message.error('保存失败');
     }
   };
+
+  const selectOptions = useMemo(
+    () => accountOptions.map((a) => ({
+      value: a.id,
+      label: `${a.name || a.id} (${a.account_id})`,
+    })),
+    [accountOptions],
+  );
 
   const columns = [
     { title: '昵称', dataIndex: 'name', key: 'name' },
     { title: '邮箱', dataIndex: 'email', key: 'email', render: (v: string | null) => v || '-' },
     {
       title: '角色', dataIndex: 'role', key: 'role',
-      render: (r: string) => <Tag color={r === 'admin' ? 'blue' : 'green'}>{r === 'admin' ? '管理员' : '普通用户'}</Tag>,
+      render: (r: string) => (
+        <Tag color={r === 'admin' ? 'blue' : 'green'}>{r === 'admin' ? '管理员' : '普通用户'}</Tag>
+      ),
     },
     {
       title: '可访问账户', dataIndex: 'allowed_accounts', key: 'accounts',
-      render: (arr: string[]) => {
-        if (!arr || arr.length === 0) return <Tag>全部</Tag>;
-        return arr.map((a) => <Tag key={a} style={{ marginBottom: 4 }}>{a.replace(/^act_/, '')}</Tag>);
-      },
+      render: (arr: string[], record: DingTalkUser) => renderAllowedAccounts(record.role, arr),
     },
     {
       title: '操作', key: 'actions',
-      render: (_: any, record: DingTalkUser) => (
+      render: (_: unknown, record: DingTalkUser) => (
         <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
       ),
     },
@@ -105,17 +147,19 @@ export const UserManagement: React.FC = () => {
             />
           </div>
           <div>
-            <Typography.Text strong>可访问广告账户（不选 = 全部）</Typography.Text>
+            <Typography.Text strong>{accountsLabel(editRole)}</Typography.Text>
             <Select
               mode="multiple"
+              showSearch
+              optionFilterProp="label"
+              filterOption={(input, option) =>
+                String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+              }
               value={editAccounts}
               onChange={setEditAccounts}
               style={{ width: '100%', marginTop: 8 }}
-              placeholder="选择广告账户"
-              options={accounts.map((a) => ({
-                value: a.id,
-                label: `${a.name || a.id} (${a.id.replace(/^act_/, '')})`,
-              }))}
+              placeholder="搜索并选择广告账户"
+              options={selectOptions}
             />
           </div>
         </Space>

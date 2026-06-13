@@ -39,3 +39,16 @@ body {
 .ant-table-wrapper .utm-unmatched-row > td {
   background-color: #fff1f0 !important;
 }
+
+.ant-table-wrapper .ads-daily-breakdown-row > td {
+  background-color: #fafafa !important;
+}
+
+.ant-table-wrapper .ads-daily-breakdown-row > td:first-child {
+  border-top: none;
+}
+
+.ant-table-wrapper .ads-daily-expand-col {
+  padding-left: 4px !important;
+  padding-right: 0 !important;
+}

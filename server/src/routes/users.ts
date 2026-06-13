@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requireAdmin } from '../middleware/permission';
 import { listUsers, setUserPermissions, getUserById } from '../models/user';
+import { getGlobalAccountCatalog } from '../models/adAccount';
 
 export const usersRouter = Router();
 usersRouter.use(authMiddleware);
@@ -11,6 +12,22 @@ usersRouter.get('/', requireAdmin, async (_req: AuthRequest, res: Response) => {
   try {
     const users = await listUsers();
     res.json({ data: users });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/users/account-options — 全库账户目录（用于授权下拉）
+usersRouter.get('/account-options', requireAdmin, async (_req: AuthRequest, res: Response) => {
+  try {
+    const accounts = await getGlobalAccountCatalog();
+    res.json({
+      data: accounts.map((a) => ({
+        id: a.id,
+        name: a.name,
+        account_id: a.account_id,
+      })),
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
