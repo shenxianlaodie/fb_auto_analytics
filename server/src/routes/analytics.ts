@@ -160,7 +160,19 @@ analyticsRouter.get('/cross-account', async (req: AuthRequest, res: Response) =>
     const range = dateStart && dateEnd
       ? { dateStart: dateStart as string, dateEnd: dateEnd as string }
       : defaultDateRange();
-    const result = await dashboardService.getCrossAccountSummary(range.dateStart, range.dateEnd);
+
+    const isAdminAllAccess =
+      req.userRole === 'admin' &&
+      (!req.userAllowedAccounts || req.userAllowedAccounts.length === 0);
+    const allowedAccountIds = isAdminAllAccess
+      ? undefined
+      : (req.userAllowedAccounts || []).map((id) => id.replace(/^act_/, ''));
+
+    const result = await dashboardService.getCrossAccountSummary(
+      range.dateStart,
+      range.dateEnd,
+      allowedAccountIds
+    );
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

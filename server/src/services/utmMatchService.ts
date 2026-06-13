@@ -62,6 +62,7 @@ export class UtmMatchService {
         beginCheckout: row.beginCheckout,
         orders: row.orders,
         sales: row.sales,
+        escapeRate: row.escapeRate,
         dateStart,
         dateEnd,
       });
@@ -84,6 +85,7 @@ export class UtmMatchService {
         beginCheckout: row.beginCheckout,
         orders: row.orders,
         sales: row.sales,
+        escapeRate: row.escapeRate,
         dateStart,
         dateEnd,
       });

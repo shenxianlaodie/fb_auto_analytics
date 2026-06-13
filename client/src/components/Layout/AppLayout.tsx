@@ -92,13 +92,24 @@ export const AppLayout: React.FC = () => {
     navigate('/login');
   };
 
+  const siderWidth = sidebarCollapsed ? 80 : 200;
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
       <Sider
         trigger={null}
         collapsible
         collapsed={sidebarCollapsed}
+        width={200}
+        collapsedWidth={80}
         style={{
+          position: 'fixed',
+          left: 0,
+          top: 0,
+          bottom: 0,
+          height: '100vh',
+          overflow: 'auto',
+          zIndex: 100,
           background: themeToken.colorBgContainer,
           borderRight: `1px solid ${themeToken.colorBorderSecondary}`,
         }}
@@ -123,7 +134,7 @@ export const AppLayout: React.FC = () => {
         />
       </Sider>
 
-      <Layout>
+      <Layout style={{ marginLeft: siderWidth, minHeight: '100vh', transition: 'margin-left 0.2s' }}>
         <Header style={{
           background: themeToken.colorBgContainer,
           padding: '0 24px',

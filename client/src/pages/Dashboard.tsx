@@ -2,46 +2,54 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Row, Col, DatePicker, Space, Typography, Alert } from 'antd';
 import dayjs from 'dayjs';
 import { MetricsCard } from '../components/Analytics/MetricsCard';
-import { PieChartCard } from '../components/Analytics/PieChartCard';
 import { TopPerformersTable } from '../components/Analytics/TopPerformersTable';
 import api from '../services/api';
-import { useAccountStore } from '../store/accountStore';
 import { useUIStore } from '../store/uiStore';
 
 const { RangePicker } = DatePicker;
 const { Title, Text } = Typography;
 
-interface DbDashboard {
-  overview: {
-    spend: number;
-    utmUv: number;
-    utmOrders: number;
-    utmSales: number;
-    roas: number;
-    matched: number;
-    unmatched: number;
-    totalAds: number;
-  };
-  campaigns: Array<{ id: string; name: string; spend: number; status: string }>;
-  meta?: { syncWarnings?: string[]; metricsSyncedAt?: string | null; utmSyncedAt?: string | null };
+interface CrossAccountTotals {
+  spend: number;
+  utmUv: number;
+  utmOrders: number;
+  utmSales: number;
+  roas: number;
+  aov: number;
+  conversionRate: number;
+  matched: number;
+  unmatched: number;
+  totalAds: number;
+}
+
+interface CrossAccountRow extends CrossAccountTotals {
+  accountId: string;
+  accountName: string;
+  utmAddToCart: number;
+  utmBeginCheckout: number;
+  cpc: number;
+  costPerAddToCart: number;
+  costPerInitiateCheckout: number;
+  costPerOrder: number;
+}
+
+interface CrossAccountResponse {
+  totals: CrossAccountTotals;
+  accounts: CrossAccountRow[];
 }
 
 export const Dashboard: React.FC = () => {
-  const { accountId, accountName } = useAccountStore();
   const { dateRange, setDateRange } = useUIStore();
-  const [data, setData] = useState<DbDashboard | null>(null);
+  const [data, setData] = useState<CrossAccountResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const fetchDashboard = useCallback(async () => {
-    if (!accountId) return;
     setLoading(true);
     setError(null);
     try {
-      const resp = await api.get('/analytics/dashboard', {
+      const resp = await api.get('/analytics/cross-account', {
         params: {
-          accountId,
-          accountName,
           dateStart: dateRange[0],
           dateEnd: dateRange[1],
         },
@@ -52,17 +60,19 @@ export const Dashboard: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [accountId, accountName, dateRange]);
+  }, [dateRange]);
 
   useEffect(() => {
     fetchDashboard();
   }, [fetchDashboard]);
 
-  const overview = data?.overview;
-  const pieData = (data?.campaigns || []).map((c) => ({
-    name: c.name || c.id,
-    value: c.spend ?? 0,
-  }));
+  const totals = data?.totals;
+  const aov =
+    totals?.aov ??
+    (totals && totals.utmOrders > 0 ? totals.utmSales / totals.utmOrders : 0);
+  const conversionRate =
+    totals?.conversionRate ??
+    (totals && totals.utmUv > 0 ? (totals.utmOrders / totals.utmUv) * 100 : 0);
 
   return (
     <div>
@@ -83,49 +93,44 @@ export const Dashboard: React.FC = () => {
       </div>
 
       {error && <Alert type="error" message={error} style={{ marginBottom: 16 }} showIcon />}
-      {data?.meta?.syncWarnings?.map((w) => (
-        <Alert key={w} type="warning" message={w} style={{ marginBottom: 8 }} showIcon />
-      ))}
 
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        <Col xs={12} sm={6}>
-          <MetricsCard title="总花费 (FB)" value={overview?.spend || 0} prefix="$" precision={2} loading={loading} color="#1677ff" />
+        <Col xs={12} sm={8} md={4}>
+          <MetricsCard title="总花费 (FB)" value={totals?.spend || 0} prefix="$" precision={2} loading={loading} color="#1677ff" />
         </Col>
-        <Col xs={12} sm={6}>
-          <MetricsCard title="UTM 访客 (uv)" value={overview?.utmUv || 0} precision={0} loading={loading} color="#52c41a" />
+        <Col xs={12} sm={8} md={4}>
+          <MetricsCard title="UTM 访客 (uv)" value={totals?.utmUv || 0} precision={0} loading={loading} color="#52c41a" />
         </Col>
-        <Col xs={12} sm={6}>
-          <MetricsCard title="成效 (orders)" value={overview?.utmOrders || 0} precision={0} loading={loading} color="#fa8c16" />
+        <Col xs={12} sm={8} md={4}>
+          <MetricsCard title="成效 (orders)" value={totals?.utmOrders || 0} precision={0} loading={loading} color="#fa8c16" />
         </Col>
-        <Col xs={12} sm={6}>
-          <MetricsCard title="ROAS (sales/spend)" value={overview?.roas || 0} precision={2} loading={loading} color="#722ed1" />
+        <Col xs={12} sm={8} md={4}>
+          <MetricsCard title="ROAS (sales/spend)" value={totals?.roas || 0} precision={2} loading={loading} color="#722ed1" />
+        </Col>
+        <Col xs={12} sm={8} md={4}>
+          <MetricsCard title="客单价" value={aov} prefix="$" precision={2} loading={loading} color="#13c2c2" />
+        </Col>
+        <Col xs={12} sm={8} md={4}>
+          <MetricsCard title="转化率" value={conversionRate} suffix="%" precision={2} loading={loading} color="#eb2f96" />
         </Col>
       </Row>
 
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
-        <Col xs={24} lg={8}>
-          <PieChartCard title="广告系列花费占比" data={pieData} loading={loading} />
-        </Col>
-        <Col xs={24} lg={16}>
+        <Col xs={24}>
           <TopPerformersTable
-            title="🏆 广告系列 TOP（按花费）"
-            data={(data?.campaigns || []).map((c) => ({
-              id: c.id,
-              name: c.name,
-              spend: c.spend,
-              status: c.status,
-            }))}
+            title="🏆 广告账户 TOP"
+            data={data?.accounts || []}
             loading={loading}
-            type="campaign"
+            type="account"
           />
         </Col>
       </Row>
 
-      {overview && (
+      {totals && (
         <Alert
           type="info"
           showIcon
-          message={`UTM 匹配：${overview.matched}/${overview.totalAds} 条广告已匹配，${overview.unmatched} 条未匹配`}
+          message={`UTM 匹配：${totals.matched}/${totals.totalAds} 条广告已匹配，${totals.unmatched} 条未匹配`}
         />
       )}
     </div>

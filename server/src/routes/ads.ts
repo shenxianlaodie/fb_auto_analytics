@@ -5,6 +5,7 @@ import { writeBackAd } from '../models/fbStructure';
 import { FacebookClient } from '../services/facebookClient';
 import { sendFbError } from '../utils/fbError';
 import { validateCreateAd, validateUpdateAd } from '../utils/adValidators';
+import { resolveFbWriteToken } from '../utils/fbWriteToken';
 
 export const adsRouter = Router();
 adsRouter.use(authMiddleware);
@@ -43,7 +44,7 @@ adsRouter.post('/', async (req: AuthRequest, res: Response) => {
       res.status(400).json({ error: validationError });
       return;
     }
-    const service = new AdService(req.accessToken!);
+    const service = new AdService(await resolveFbWriteToken({ accountId: accountId as string }));
     const result = await service.createAd(accountId, {
       adsetId,
       name,
@@ -65,7 +66,7 @@ adsRouter.put('/:id', async (req: AuthRequest, res: Response) => {
       res.status(400).json({ error: validationError });
       return;
     }
-    const service = new AdService(req.accessToken!);
+    const service = new AdService(await resolveFbWriteToken({ entityId: req.params.id, level: 'ad' }));
     const result = await service.updateAd(req.params.id, { name, status });
     // FB 更新成功后立即写回本地库，前端无需等下一轮同步
     await writeBackAd(req.params.id, { status });
@@ -77,7 +78,7 @@ adsRouter.put('/:id', async (req: AuthRequest, res: Response) => {
 
 adsRouter.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    const service = new AdService(req.accessToken!);
+    const service = new AdService(await resolveFbWriteToken({ entityId: req.params.id, level: 'ad' }));
     await service.deleteAd(req.params.id);
     res.json({ success: true });
   } catch (err: any) {
@@ -89,12 +90,13 @@ adsRouter.delete('/:id', async (req: AuthRequest, res: Response) => {
 adsRouter.post('/:id/copy', async (req: AuthRequest, res: Response) => {
   try {
     const { count = 1, statusOption = 'PAUSED', targetAdsetId } = req.body;
+    const token = await resolveFbWriteToken({ entityId: req.params.id, level: 'ad' });
     const fb = FacebookClient.getInstance();
     const copies: any[] = [];
     for (let i = 0; i < Math.min(Number(count) || 1, 10); i++) {
       const params: Record<string, any> = { status_option: statusOption };
       if (targetAdsetId) params.adset_id = targetAdsetId;
-      copies.push(await fb.copyObject(req.params.id, req.accessToken!, params));
+      copies.push(await fb.copyObject(req.params.id, token, params));
     }
     res.json({ success: true, copies });
   } catch (err: any) {

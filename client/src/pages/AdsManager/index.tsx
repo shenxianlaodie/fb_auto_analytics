@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Breadcrumb, Button, DatePicker, Dropdown, Input, Popconfirm, Select, Space, Table, Tabs, Tag, Typography, message,
+  Alert, Breadcrumb, Button, DatePicker, Dropdown, Input, Popconfirm, Select, Space, Tabs, Tag, Typography, message,
 } from 'antd';
 import {
   ArrowLeftOutlined, CloseOutlined, DeleteOutlined, FileTextOutlined, PlusOutlined, ReloadOutlined, SearchOutlined,
@@ -12,8 +12,9 @@ import { useAccountStore } from '../../store/accountStore';
 import { useUIStore } from '../../store/uiStore';
 import { getDrillLevel, Level, useAdsManagerStore } from '../../store/adsManagerStore';
 import { useColumnOrderStore } from '../../store/columnOrderStore';
-import { applyColumnOrder } from '../../utils/columnOrder';
+import { applyColumnLayout } from '../../utils/columnOrder';
 import { ColumnOrderSettings } from '../../components/AdsManager/ColumnOrderSettings';
+import { ResizableTable } from '../../components/AdsManager/ResizableTable';
 import { EmptyState } from '../../components/Common/EmptyState';
 import { useHierarchy } from './useHierarchy';
 import { adsetIdOf, campaignIdOf, filterHierarchy, type BudgetKind } from './helpers';
@@ -58,7 +59,7 @@ export const AdsManager: React.FC = () => {
     activeTab, selected, drill, setActiveTab, setSelected, clearSelected,
     enterCampaign, enterAdset, exitToRoot, exitToCampaign, setDrill,
   } = useAdsManagerStore();
-  const columnOrders = useColumnOrderStore((s) => s.orders);
+  const columnLayout = useColumnOrderStore((s) => s.layout);
   const { campaigns, adsets, ads, loading, syncMeta, reload, refresh } = useHierarchy();
 
   const drillLevel = getDrillLevel(drill);
@@ -359,29 +360,43 @@ export const AdsManager: React.FC = () => {
       : rows;
 
   const campaignColumns = useMemo(
-    () => applyColumnOrder(buildCampaignColumns(columnsCtx), columnOrders.campaign),
+    () => applyColumnLayout(
+      buildCampaignColumns(columnsCtx),
+      columnLayout.campaign.order,
+      columnLayout.campaign.widths,
+    ),
     [
-      filtered.ads, editingBudget, columnOrders.campaign, campaigns,
+      filtered.ads, editingBudget, columnLayout.campaign, campaigns,
       dailyBreakdownActive, expandedDailyKeys, toggleDailyExpand,
     ],
   );
   const adsetColumns = useMemo(
-    () => applyColumnOrder(buildAdsetColumns(columnsCtx), columnOrders.adset),
+    () => applyColumnLayout(
+      buildAdsetColumns(columnsCtx),
+      columnLayout.adset.order,
+      columnLayout.adset.widths,
+    ),
     [
-      filtered.ads, editingBudget, columnOrders.adset, campaigns,
+      filtered.ads, editingBudget, columnLayout.adset, campaigns,
       dailyBreakdownActive, expandedDailyKeys, toggleDailyExpand,
     ],
   );
   const adColumns = useMemo(
-    () => applyColumnOrder(buildAdColumns(columnsCtx), columnOrders.ad),
+    () => applyColumnLayout(
+      buildAdColumns(columnsCtx),
+      columnLayout.ad.order,
+      columnLayout.ad.widths,
+    ),
     [
-      filtered.ads, editingBudget, columnOrders.ad, campaigns,
+      filtered.ads, editingBudget, columnLayout.ad, campaigns,
       dailyBreakdownActive, expandedDailyKeys, toggleDailyExpand,
     ],
   );
 
   const renderTable = (level: Level, columns: any[], data: any[]) => (
-    <Table
+    <ResizableTable
+      level={level}
+      columnKeys={columns.map((c) => String(c.key ?? ''))}
       key={dailyBreakdownActive ? `daily-${level}` : level}
       columns={columns}
       dataSource={withDailyRows(data)}

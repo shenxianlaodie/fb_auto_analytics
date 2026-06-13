@@ -3,10 +3,11 @@ import type { ColumnsType } from 'antd/es/table';
 
 export type TableLevel = 'campaign' | 'adset' | 'ad';
 
-export const PINNED_LEFT_KEYS = ['_expand', 'name'];
+export const PINNED_LEFT_KEYS = ['toggle', '_expand', 'name'];
 export const PINNED_RIGHT_KEYS = ['actions'];
 
-export const DEFAULT_COLUMN_ORDERS: Record<TableLevel, string[]> = {
+/** 默认可见列（不含 optional） */
+export const DEFAULT_VISIBLE_COLUMNS: Record<TableLevel, string[]> = {
   campaign: [
     'status',
     'budget',
@@ -35,7 +36,6 @@ export const DEFAULT_COLUMN_ORDERS: Record<TableLevel, string[]> = {
   ],
   ad: [
     'creative',
-    'utmCampaign',
     'status',
     'spend',
     'cpm',
@@ -47,6 +47,45 @@ export const DEFAULT_COLUMN_ORDERS: Record<TableLevel, string[]> = {
     'costPerInitiateCheckout',
     'id',
   ],
+};
+
+/** @deprecated use DEFAULT_VISIBLE_COLUMNS */
+export const DEFAULT_COLUMN_ORDERS = DEFAULT_VISIBLE_COLUMNS;
+
+/** 默认隐藏、用户可勾选显示 */
+export const OPTIONAL_COLUMNS: Record<TableLevel, string[]> = {
+  campaign: ['addToCartCount', 'beginCheckoutCount', 'aov', 'bounceRate'],
+  adset: ['addToCartCount', 'beginCheckoutCount', 'aov', 'bounceRate'],
+  ad: ['addToCartCount', 'beginCheckoutCount', 'aov', 'bounceRate'],
+};
+
+export const ALL_COLUMN_KEYS: Record<TableLevel, string[]> = {
+  campaign: [...DEFAULT_VISIBLE_COLUMNS.campaign, ...OPTIONAL_COLUMNS.campaign],
+  adset: [...DEFAULT_VISIBLE_COLUMNS.adset, ...OPTIONAL_COLUMNS.adset],
+  ad: [...DEFAULT_VISIBLE_COLUMNS.ad, ...OPTIONAL_COLUMNS.ad],
+};
+
+export const DEFAULT_COLUMN_WIDTHS: Record<string, number> = {
+  toggle: 64,
+  _expand: 40,
+  name: 220,
+  status: 110,
+  budget: 100,
+  utmOrders: 70,
+  purchases: 90,
+  spend: 90,
+  cpm: 80,
+  uniqueClicks: 100,
+  costPerAddToCart: 90,
+  costPerInitiateCheckout: 90,
+  costPerPurchase: 90,
+  id: 160,
+  creative: 70,
+  addToCartCount: 80,
+  beginCheckoutCount: 100,
+  aov: 80,
+  bounceRate: 80,
+  actions: 160,
 };
 
 export const COLUMN_LABELS: Record<TableLevel, Record<string, string>> = {
@@ -62,6 +101,10 @@ export const COLUMN_LABELS: Record<TableLevel, Record<string, string>> = {
     costPerInitiateCheckout: '单次结账费用',
     costPerPurchase: 'ROAS',
     id: '广告编号',
+    addToCartCount: '加购次数',
+    beginCheckoutCount: '发起结账次数',
+    aov: '客单价',
+    bounceRate: '跳出率',
   },
   adset: {
     status: '投放状态',
@@ -75,10 +118,13 @@ export const COLUMN_LABELS: Record<TableLevel, Record<string, string>> = {
     costPerAddToCart: '单次加购费用',
     costPerInitiateCheckout: '单次结账费用',
     id: '广告组编号',
+    addToCartCount: '加购次数',
+    beginCheckoutCount: '发起结账次数',
+    aov: '客单价',
+    bounceRate: '跳出率',
   },
   ad: {
     creative: '创意',
-    utmCampaign: '活动关键词',
     status: '投放状态',
     spend: '已花费',
     cpm: 'CPM',
@@ -89,6 +135,10 @@ export const COLUMN_LABELS: Record<TableLevel, Record<string, string>> = {
     costPerAddToCart: '单次加购费用',
     costPerInitiateCheckout: '单次结账费用',
     id: '广告编号',
+    addToCartCount: '加购次数',
+    beginCheckoutCount: '发起结账次数',
+    aov: '客单价',
+    bounceRate: '跳出率',
   },
 };
 
@@ -98,34 +148,61 @@ export const TABLE_LEVEL_LABELS: Record<TableLevel, string> = {
   ad: '广告',
 };
 
-function columnKey(col: { key?: Key; dataIndex?: unknown }): string {
+function getColumnKey(col: { key?: Key; dataIndex?: unknown }): string {
   return String(col.key ?? col.dataIndex ?? '');
 }
 
-function getColumnKey(col: { key?: Key; dataIndex?: unknown }): string {
-  return columnKey(col);
-}
-
-export function mergeColumnOrder(level: TableLevel, saved?: string[]): string[] {
-  const defaults = DEFAULT_COLUMN_ORDERS[level];
+export function mergeVisibleColumns(level: TableLevel, saved?: string[]): string[] {
+  const defaults = DEFAULT_VISIBLE_COLUMNS[level];
+  const optional = OPTIONAL_COLUMNS[level];
+  const all = ALL_COLUMN_KEYS[level];
   if (!saved?.length) return [...defaults];
 
   const merged: string[] = [];
   for (const key of saved) {
-    if (defaults.includes(key) && !merged.includes(key)) merged.push(key);
+    if (all.includes(key) && !merged.includes(key)) merged.push(key);
   }
   for (const key of defaults) {
     if (!merged.includes(key)) merged.push(key);
   }
-  return merged;
+  return merged.filter((key) => !optional.includes(key) || saved.includes(key));
 }
 
-export function applyColumnOrder<T>(
+/** @deprecated use mergeVisibleColumns */
+export function mergeColumnOrder(level: TableLevel, saved?: string[]): string[] {
+  return mergeVisibleColumns(level, saved);
+}
+
+function resolveWidth(key: string, widths?: Record<string, number>): number | undefined {
+  const w = widths?.[key] ?? DEFAULT_COLUMN_WIDTHS[key];
+  return w && w > 0 ? w : undefined;
+}
+
+function withWidth<T>(
+  col: ColumnsType<T>[number],
+  key: string,
+  widths?: Record<string, number>,
+): ColumnsType<T>[number] {
+  const width = resolveWidth(key, widths);
+  if (key === '_expand') return { ...col, width: 40 };
+  if (width == null) return col;
+  return { ...col, width };
+}
+
+export function applyColumnLayout<T>(
   columns: ColumnsType<T>,
-  savedOrder: string[],
+  visibleOrder: string[],
+  widths?: Record<string, number>,
 ): ColumnsType<T> {
-  const left = columns.filter((c) => PINNED_LEFT_KEYS.includes(getColumnKey(c as { key?: Key; dataIndex?: unknown })));
-  const right = columns.filter((c) => PINNED_RIGHT_KEYS.includes(getColumnKey(c as { key?: Key; dataIndex?: unknown })));
+  const left = PINNED_LEFT_KEYS
+    .map((key) => columns.find((c) => getColumnKey(c as { key?: Key; dataIndex?: unknown }) === key))
+    .filter((c): c is (typeof columns)[number] => !!c)
+    .map((c) => withWidth(c, getColumnKey(c as { key?: Key; dataIndex?: unknown }), widths));
+
+  const right = columns
+    .filter((c) => PINNED_RIGHT_KEYS.includes(getColumnKey(c as { key?: Key; dataIndex?: unknown })))
+    .map((c) => withWidth(c, getColumnKey(c as { key?: Key; dataIndex?: unknown }), widths));
+
   const middle = columns.filter(
     (c) =>
       !PINNED_LEFT_KEYS.includes(getColumnKey(c as { key?: Key; dataIndex?: unknown }))
@@ -133,19 +210,29 @@ export function applyColumnOrder<T>(
   );
 
   const middleByKey = new Map(middle.map((c) => [getColumnKey(c as { key?: Key; dataIndex?: unknown }), c]));
-  const middleKeys = middle.map((c) => getColumnKey(c as { key?: Key; dataIndex?: unknown }));
-  const orderedKeys: string[] = [];
+  const visibleSet = new Set(visibleOrder);
 
-  for (const key of savedOrder) {
-    if (middleKeys.includes(key) && !orderedKeys.includes(key)) orderedKeys.push(key);
-  }
-  for (const key of middleKeys) {
-    if (!orderedKeys.includes(key)) orderedKeys.push(key);
-  }
-
-  const sortedMiddle = orderedKeys
+  const sortedMiddle = visibleOrder
     .map((key) => middleByKey.get(key))
-    .filter((c): c is (typeof middle)[number] => !!c);
+    .filter((c): c is (typeof middle)[number] => !!c && visibleSet.has(getColumnKey(c as { key?: Key; dataIndex?: unknown })))
+    .map((c) => withWidth(c, getColumnKey(c as { key?: Key; dataIndex?: unknown }), widths));
 
   return [...left, ...sortedMiddle, ...right];
+}
+
+/** @deprecated use applyColumnLayout */
+export function applyColumnOrder<T>(
+  columns: ColumnsType<T>,
+  savedOrder: string[],
+): ColumnsType<T> {
+  return applyColumnLayout(columns, savedOrder);
+}
+
+export function getHiddenOptionalColumns(level: TableLevel, visibleOrder: string[]): string[] {
+  return OPTIONAL_COLUMNS[level].filter((key) => !visibleOrder.includes(key));
+}
+
+export function getHiddenDefaultColumns(level: TableLevel, visibleOrder: string[]): string[] {
+  const all = ALL_COLUMN_KEYS[level];
+  return all.filter((key) => !visibleOrder.includes(key) && !OPTIONAL_COLUMNS[level].includes(key));
 }

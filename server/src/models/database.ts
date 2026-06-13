@@ -134,6 +134,7 @@ CREATE TABLE IF NOT EXISTS shoplazza_utm (
   begin_checkout INTEGER DEFAULT 0,
   orders INTEGER DEFAULT 0,
   sales NUMERIC(12,2) DEFAULT 0,
+  escape_rate NUMERIC(8,4) DEFAULT 0,
   date_start TEXT NOT NULL,
   date_end TEXT NOT NULL,
   synced_at TIMESTAMPTZ DEFAULT NOW(),
@@ -305,6 +306,7 @@ export async function initDatabase(): Promise<Pool> {
     await client.query(`ALTER TABLE shoplazza_utm ADD COLUMN IF NOT EXISTS shop_id TEXT NOT NULL DEFAULT ''`);
     await client.query(`ALTER TABLE shoplazza_utm ADD COLUMN IF NOT EXISTS add_to_cart INTEGER DEFAULT 0`);
     await client.query(`ALTER TABLE shoplazza_utm ADD COLUMN IF NOT EXISTS begin_checkout INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE shoplazza_utm ADD COLUMN IF NOT EXISTS escape_rate NUMERIC(8,4) DEFAULT 0`);
     await client.query(`
       ALTER TABLE shoplazza_utm
       DROP CONSTRAINT IF EXISTS shoplazza_utm_dimension_utm_value_date_start_date_end_key

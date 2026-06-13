@@ -7,6 +7,7 @@ export interface DailyBreakdownRow {
   utmBeginCheckout: number;
   utmOrders: number;
   utmSales: number;
+  utmBounceRate: number;
 }
 
 export interface DailyBreakdownParent {
@@ -48,6 +49,7 @@ function emptyDailyRow(date: string): DailyBreakdownRow {
     utmBeginCheckout: 0,
     utmOrders: 0,
     utmSales: 0,
+    utmBounceRate: 0,
   };
 }
 
@@ -88,6 +90,7 @@ export function flattenWithDailyBreakdown<T extends DailyBreakdownParent>(
         utmBeginCheckout: day.utmBeginCheckout,
         utmOrders: day.utmOrders,
         utmSales: day.utmSales,
+        utmBounceRate: day.utmBounceRate,
       });
     }
   }

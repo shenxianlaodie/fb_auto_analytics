@@ -4,9 +4,9 @@ import { CaretDownOutlined, CaretRightOutlined, EditOutlined } from '@ant-design
 import type { ColumnsType } from 'antd/es/table';
 import {
   UtmAggMetrics, aggregateAdsMetrics, adsForAdset, adsForCampaign,
-  cmpNum, cmpStr, fmtCostPerCount, fmtCostPerOrder, fmtCostPerUv, fmtOrders, fmtRoas,
-  formatBudgetUsd, getBudgetKind, ownStatusOf, parseBudget, renderDeliveryStatusCell,
-  usdToCents, type BudgetKind,
+  cmpNum, cmpStr, creativeThumbUrl, fmtAov, fmtCostPerCount, fmtCostPerOrder, fmtCostPerUv, fmtCount,
+  fmtOrders, fmtPercent, fmtRoas, formatBudgetUsd, getBudgetKind, ownStatusOf,
+  parseBudget, renderDeliveryStatusCell, usdToCents, weightedBounceRate, type BudgetKind,
 } from './helpers';
 import { NameCell } from './NameCell';
 import type { Level } from '../../store/adsManagerStore';
@@ -109,7 +109,7 @@ function prependExpandCol(ctx: ColumnsCtx, cols: any[]): any[] {
 
 function switchCol(ctx: ColumnsCtx, level: Level): any {
   return {
-    title: '开/关', key: 'toggle', width: 64,
+    title: '开/关', key: 'toggle', width: 64, fixed: 'left' as const,
     render: (_: any, r: any) => {
       if (r._isDailyRow) return null;
       return (
@@ -318,17 +318,108 @@ function adMetricCols(): any[] {
   ];
 }
 
+/** 默认隐藏的可选指标列 */
+function optionalAggMetricCols(childAdsOf: (r: any) => any[]): any[] {
+  const bounceOf = (r: any): number => {
+    if (r._isDailyRow) return Number(r.utmBounceRate) || 0;
+    return weightedBounceRate(childAdsOf(r));
+  };
+  const col = (
+    title: string, key: string, width: number,
+    value: (r: any, m: UtmAggMetrics) => number,
+    text: (r: any, m: UtmAggMetrics) => string,
+  ): any => ({
+    title, key, width,
+    sorter: (a: any, b: any) => {
+      if (a._isDailyRow || b._isDailyRow) return 0;
+      const ma = a._isDailyRow ? aggregateAdsMetrics([]) : aggregateAdsMetrics(childAdsOf(a));
+      const mb = b._isDailyRow ? aggregateAdsMetrics([]) : aggregateAdsMetrics(childAdsOf(b));
+      return cmpNum(value(a, ma), value(b, mb));
+    },
+    render: (_: any, r: any) => {
+      const m = r._isDailyRow
+        ? {
+          spend: Number(r.spend) || 0,
+          utmUv: Number(r.utmUv) || 0,
+          utmOrders: Number(r.utmOrders) || 0,
+          utmSales: Number(r.utmSales) || 0,
+          utmAddToCart: Number(r.utmAddToCart) || 0,
+          utmBeginCheckout: Number(r.utmBeginCheckout) || 0,
+        }
+        : aggregateAdsMetrics(childAdsOf(r));
+      const v = value(r, m);
+      if (r._isDailyRow && v <= 0) return '-';
+      return text(r, m);
+    },
+  });
+  return [
+    col('加购次数', 'addToCartCount', 80,
+      (_r, m) => m.utmAddToCart, (_r, m) => fmtCount(m.utmAddToCart)),
+    col('发起结账\n次数', 'beginCheckoutCount', 100,
+      (_r, m) => m.utmBeginCheckout, (_r, m) => fmtCount(m.utmBeginCheckout)),
+    col('客单价', 'aov', 80,
+      (_r, m) => (m.utmOrders > 0 ? m.utmSales / m.utmOrders : -1),
+      (_r, m) => fmtAov(m.utmSales, m.utmOrders)),
+    col('跳出率', 'bounceRate', 80,
+      (r) => bounceOf(r), (r) => fmtPercent(bounceOf(r))),
+  ];
+}
+
+function optionalAdMetricCols(): any[] {
+  const dashIfEmpty = (r: any, v: number | string) => {
+    if (r._isDailyRow && (v === '-' || v === 0 || v === '0')) return '-';
+    return v;
+  };
+  return [
+    {
+      title: '加购次数', key: 'addToCartCount', width: 80,
+      sorter: (a: any, b: any) => {
+        if (a._isDailyRow || b._isDailyRow) return 0;
+        return cmpNum(Number(a.utmAddToCart) || 0, Number(b.utmAddToCart) || 0);
+      },
+      render: (_: any, r: any) => dashIfEmpty(r, fmtCount(Number(r.utmAddToCart) || 0)),
+    },
+    {
+      title: '发起结账\n次数', key: 'beginCheckoutCount', width: 100,
+      sorter: (a: any, b: any) => {
+        if (a._isDailyRow || b._isDailyRow) return 0;
+        return cmpNum(Number(a.utmBeginCheckout) || 0, Number(b.utmBeginCheckout) || 0);
+      },
+      render: (_: any, r: any) => dashIfEmpty(r, fmtCount(Number(r.utmBeginCheckout) || 0)),
+    },
+    {
+      title: '客单价', key: 'aov', width: 80,
+      sorter: (a: any, b: any) => {
+        if (a._isDailyRow || b._isDailyRow) return 0;
+        const va = Number(a.utmOrders) > 0 ? Number(a.utmSales) / Number(a.utmOrders) : -1;
+        const vb = Number(b.utmOrders) > 0 ? Number(b.utmSales) / Number(b.utmOrders) : -1;
+        return cmpNum(va, vb);
+      },
+      render: (_: any, r: any) => dashIfEmpty(r, fmtAov(Number(r.utmSales) || 0, Number(r.utmOrders) || 0)),
+    },
+    {
+      title: '跳出率', key: 'bounceRate', width: 80,
+      sorter: (a: any, b: any) => {
+        if (a._isDailyRow || b._isDailyRow) return 0;
+        return cmpNum(Number(a.utmBounceRate) || 0, Number(b.utmBounceRate) || 0);
+      },
+      render: (_: any, r: any) => dashIfEmpty(r, fmtPercent(Number(r.utmBounceRate) || 0)),
+    },
+  ];
+}
+
 // --- 三层列构建 ---
 
 export function buildCampaignColumns(ctx: ColumnsCtx): ColumnsType<any> {
   return prependExpandCol(ctx, [
-    nameCol(ctx, 'campaign', '广告系列名', true),
     switchCol(ctx, 'campaign'),
+    nameCol(ctx, 'campaign', '广告系列名', true),
     statusCol('campaign'),
     budgetCol(ctx, 'campaign', '预算'),
     ...aggMetricCols((r) => adsForCampaign(r.id, ctx.allAds)),
     spendCol(),
     cpmCol(),
+    ...optionalAggMetricCols((r) => adsForCampaign(r.id, ctx.allAds)),
     idCol('广告编号'),
     {
       title: '操作', key: 'actions', width: 160, fixed: 'right' as const,
@@ -348,13 +439,14 @@ export function buildCampaignColumns(ctx: ColumnsCtx): ColumnsType<any> {
 
 export function buildAdsetColumns(ctx: ColumnsCtx): ColumnsType<any> {
   return prependExpandCol(ctx, [
-    nameCol(ctx, 'adset', '广告组名称', true),
     switchCol(ctx, 'adset'),
+    nameCol(ctx, 'adset', '广告组名称', true),
     statusCol('adset'),
     budgetCol(ctx, 'adset', '日预算'),
     ...aggMetricCols((r) => adsForAdset(r.id, ctx.allAds)),
     spendCol(),
     cpmCol(),
+    ...optionalAggMetricCols((r) => adsForAdset(r.id, ctx.allAds)),
     idCol('广告组编号'),
     {
       title: '操作', key: 'actions', width: 150, fixed: 'right' as const,
@@ -374,25 +466,23 @@ export function buildAdsetColumns(ctx: ColumnsCtx): ColumnsType<any> {
 
 export function buildAdColumns(ctx: ColumnsCtx): ColumnsType<any> {
   return prependExpandCol(ctx, [
-    nameCol(ctx, 'ad', '广告名称'),
     switchCol(ctx, 'ad'),
+    nameCol(ctx, 'ad', '广告名称'),
     {
       title: '创意', dataIndex: 'creative', key: 'creative', width: 70,
       render: (c: any, r: any) => {
         if (r._isDailyRow) return null;
-        return c?.thumbnail_url
-          ? <Image src={c.thumbnail_url} width={40} height={40} style={{ objectFit: 'cover', borderRadius: 4 }} />
+        const url = creativeThumbUrl(c);
+        return url
+          ? <Image src={url} width={40} height={40} style={{ objectFit: 'cover', borderRadius: 4 }} preview />
           : <Tag>无</Tag>;
       },
-    },
-    {
-      title: '活动关键词', dataIndex: 'utmCampaign', key: 'utmCampaign', width: 140, ellipsis: true,
-      render: (v: string | null, r: any) => (r._isDailyRow ? null : (v || '-')),
     },
     statusCol('ad'),
     spendCol(),
     cpmCol(),
     ...adMetricCols(),
+    ...optionalAdMetricCols(),
     idCol('广告编号'),
     {
       title: '操作', key: 'actions', width: 100, fixed: 'right' as const,
