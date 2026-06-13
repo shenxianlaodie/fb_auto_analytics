@@ -1,4 +1,4 @@
-import { FacebookClient } from './facebookClient';
+import { FacebookClient, FB_AD_LIST_FIELDS } from './facebookClient';
 import {
   upsertFbCampaign,
   upsertFbAdset,
@@ -12,8 +12,7 @@ import { fetchAdInsightsWithSpend } from './spendInsightsHelper';
 
 const BATCH_GAP_MS = 300;
 
-const AD_FIELDS =
-  'id,name,adset_id,campaign_id,status,creative{id,effective_object_story_id,object_story_id}';
+const AD_FIELDS = FB_AD_LIST_FIELDS;
 const CAMPAIGN_FIELDS =
   'id,name,objective,status,daily_budget,lifetime_budget';
 const ADSET_FIELDS =

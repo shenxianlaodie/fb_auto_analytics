@@ -1,14 +1,16 @@
 import React, { useState } from 'react';
-import { Button, Popover, Tabs, Typography } from 'antd';
+import { Button, Checkbox, Divider, Popover, Tabs, Typography } from 'antd';
 import {
   ArrowDownOutlined,
   ArrowUpOutlined,
+  EyeInvisibleOutlined,
   HolderOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
 import { useColumnOrderStore } from '../../store/columnOrderStore';
 import {
   COLUMN_LABELS,
+  getHiddenOptionalColumns,
   TABLE_LEVEL_LABELS,
   TableLevel,
 } from '../../utils/columnOrder';
@@ -29,10 +31,12 @@ function SortableColumnList({
   level,
   order,
   onChange,
+  onHide,
 }: {
   level: TableLevel;
   order: string[];
   onChange: (order: string[]) => void;
+  onHide: (key: string) => void;
 }) {
   const labels = COLUMN_LABELS[level];
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -43,8 +47,16 @@ function SortableColumnList({
     setDragIndex(null);
   };
 
+  if (!order.length) {
+    return (
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        暂无已显示列
+      </Typography.Text>
+    );
+  }
+
   return (
-    <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+    <div style={{ maxHeight: 280, overflowY: 'auto' }}>
       {order.map((key, index) => (
         <div
           key={key}
@@ -67,6 +79,13 @@ function SortableColumnList({
           <Button
             type="text"
             size="small"
+            icon={<EyeInvisibleOutlined />}
+            title="隐藏"
+            onClick={() => onHide(key)}
+          />
+          <Button
+            type="text"
+            size="small"
             icon={<ArrowUpOutlined />}
             disabled={index === 0}
             onClick={() => onChange(moveItem(order, index, index - 1))}
@@ -84,13 +103,43 @@ function SortableColumnList({
   );
 }
 
+function OptionalColumnList({
+  level,
+  hiddenKeys,
+  onToggle,
+}: {
+  level: TableLevel;
+  hiddenKeys: string[];
+  onToggle: (key: string, visible: boolean) => void;
+}) {
+  const labels = COLUMN_LABELS[level];
+
+  if (!hiddenKeys.length) {
+    return (
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        所有可选列已显示
+      </Typography.Text>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {hiddenKeys.map((key) => (
+        <Checkbox key={key} onChange={(e) => onToggle(key, e.target.checked)}>
+          {labels[key] || key}
+        </Checkbox>
+      ))}
+    </div>
+  );
+}
+
 export const ColumnOrderSettings: React.FC = () => {
-  const { orders, setOrder, resetOrder, resetAll } = useColumnOrderStore();
+  const { layout, setOrder, toggleColumn, resetOrder, resetAll } = useColumnOrderStore();
 
   const content = (
-    <div style={{ width: 320 }}>
+    <div style={{ width: 360 }}>
       <Typography.Paragraph type="secondary" style={{ marginBottom: 12, fontSize: 12 }}>
-        拖拽或使用箭头调整列顺序。名称列固定在左侧，操作列固定在右侧。
+        拖拽调整列顺序；可选列默认隐藏，勾选后显示。表头右缘可拖拽调整列宽，刷新后保留。
       </Typography.Paragraph>
       <Tabs
         size="small"
@@ -99,11 +148,22 @@ export const ColumnOrderSettings: React.FC = () => {
           label: TABLE_LEVEL_LABELS[level],
           children: (
             <div>
+              <Typography.Text strong style={{ fontSize: 12 }}>已显示列</Typography.Text>
               <SortableColumnList
                 level={level}
-                order={orders[level]}
+                order={layout[level].order}
                 onChange={(next) => setOrder(level, next)}
+                onHide={(key) => toggleColumn(level, key, false)}
               />
+              <Divider style={{ margin: '12px 0' }} />
+              <Typography.Text strong style={{ fontSize: 12 }}>可选列（默认隐藏）</Typography.Text>
+              <div style={{ marginTop: 8 }}>
+                <OptionalColumnList
+                  level={level}
+                  hiddenKeys={getHiddenOptionalColumns(level, layout[level].order)}
+                  onToggle={(key, visible) => toggleColumn(level, key, visible)}
+                />
+              </div>
               <Button
                 size="small"
                 type="link"
@@ -123,7 +183,7 @@ export const ColumnOrderSettings: React.FC = () => {
   );
 
   return (
-    <Popover content={content} title="列顺序设置" trigger="click" placement="bottomRight">
+    <Popover content={content} title="列设置" trigger="click" placement="bottomRight">
       <Button icon={<SettingOutlined />}>列设置</Button>
     </Popover>
   );

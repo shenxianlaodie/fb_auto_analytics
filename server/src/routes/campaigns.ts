@@ -4,6 +4,7 @@ import { CampaignService } from '../services/campaignService';
 import { upsertFbCampaign, writeBackCampaign } from '../models/fbStructure';
 import { FacebookClient } from '../services/facebookClient';
 import { sendFbError } from '../utils/fbError';
+import { resolveFbWriteToken } from '../utils/fbWriteToken';
 
 export const campaignsRouter = Router();
 campaignsRouter.use(authMiddleware);
@@ -43,7 +44,7 @@ campaignsRouter.post('/', async (req: AuthRequest, res: Response) => {
       res.status(400).json({ error: '缺少 accountId、名称或广告目标' });
       return;
     }
-    const service = new CampaignService(req.accessToken!);
+    const service = new CampaignService(await resolveFbWriteToken({ accountId: accountId as string }));
     const result = await service.createCampaign(accountId, {
       name,
       objective,
@@ -70,7 +71,7 @@ campaignsRouter.post('/', async (req: AuthRequest, res: Response) => {
 campaignsRouter.put('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const { name, status, budget } = req.body;
-    const service = new CampaignService(req.accessToken!);
+    const service = new CampaignService(await resolveFbWriteToken({ entityId: req.params.id, level: 'campaign' }));
     const result = await service.updateCampaign(req.params.id, { name, status, budget });
     // FB 更新成功后立即写回本地库，前端无需等下一轮同步
     await writeBackCampaign(req.params.id, {
@@ -87,7 +88,7 @@ campaignsRouter.put('/:id', async (req: AuthRequest, res: Response) => {
 // DELETE /api/campaigns/:id
 campaignsRouter.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    const service = new CampaignService(req.accessToken!);
+    const service = new CampaignService(await resolveFbWriteToken({ entityId: req.params.id, level: 'campaign' }));
     await service.deleteCampaign(req.params.id);
     res.json({ success: true });
   } catch (err: any) {
@@ -99,10 +100,11 @@ campaignsRouter.delete('/:id', async (req: AuthRequest, res: Response) => {
 campaignsRouter.post('/:id/copy', async (req: AuthRequest, res: Response) => {
   try {
     const { count = 1, statusOption = 'PAUSED' } = req.body;
+    const token = await resolveFbWriteToken({ entityId: req.params.id, level: 'campaign' });
     const fb = FacebookClient.getInstance();
     const copies: any[] = [];
     for (let i = 0; i < Math.min(Number(count) || 1, 10); i++) {
-      const result = await fb.copyObject(req.params.id, req.accessToken!, {
+      const result = await fb.copyObject(req.params.id, token, {
         deep_copy: true,
         status_option: statusOption,
       });

@@ -81,6 +81,7 @@ describe('dailyBreakdownHelper', () => {
           begin_checkout: 0,
           orders: 1,
           sales: 50,
+          escape_rate: 0,
           date_start: '2026-06-13',
           date_end: '2026-06-13',
           synced_at: '',

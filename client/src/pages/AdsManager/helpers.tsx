@@ -53,6 +53,39 @@ export function fmtOrders(orders: number): string {
   return n > 0 ? String(n) : '-';
 }
 
+export function fmtCount(count: number): string {
+  const n = Number(count) || 0;
+  return n > 0 ? String(n) : '-';
+}
+
+export function fmtAov(sales: number, orders: number): string {
+  if (!orders || orders <= 0) return '-';
+  return `$${(sales / orders).toFixed(2)}`;
+}
+
+export function fmtPercent(rate: number): string {
+  const n = Number(rate) || 0;
+  if (n <= 0) return '-';
+  const pct = n <= 1 ? n * 100 : n;
+  return `${pct.toFixed(1)}%`;
+}
+
+export function weightedBounceRate(ads: any[]): number {
+  let weighted = 0;
+  let uv = 0;
+  for (const ad of ads) {
+    const u = Number(ad.utmUv) || 0;
+    weighted += (Number(ad.utmBounceRate) || 0) * u;
+    uv += u;
+  }
+  return uv > 0 ? weighted / uv : 0;
+}
+
+export function creativeThumbUrl(creative: { thumbnail_url?: string; image_url?: string } | null | undefined): string | null {
+  if (!creative) return null;
+  return creative.thumbnail_url || creative.image_url || null;
+}
+
 export function cmpStr(a: string, b: string): number {
   return (a || '').localeCompare(b || '', 'zh-CN');
 }

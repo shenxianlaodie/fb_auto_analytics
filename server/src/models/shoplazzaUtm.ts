@@ -13,6 +13,7 @@ export interface ShoplazzaUtmRecord {
   begin_checkout: number;
   orders: number;
   sales: number;
+  escape_rate: number;
   date_start: string;
   date_end: string;
   synced_at: string;
@@ -28,6 +29,7 @@ export interface ShoplazzaUtmUpsertInput {
   beginCheckout: number;
   orders: number;
   sales: number;
+  escapeRate: number;
   dateStart: string;
   dateEnd: string;
 }
@@ -35,8 +37,8 @@ export interface ShoplazzaUtmUpsertInput {
 export async function upsertShoplazzaUtm(input: ShoplazzaUtmUpsertInput): Promise<void> {
   await query(
     `INSERT INTO shoplazza_utm
-     (shop_id, dimension, utm_value, uv, pv, add_to_cart, begin_checkout, orders, sales, date_start, date_end, synced_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+     (shop_id, dimension, utm_value, uv, pv, add_to_cart, begin_checkout, orders, sales, escape_rate, date_start, date_end, synced_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
      ON CONFLICT (shop_id, dimension, utm_value, date_start, date_end)
      DO UPDATE SET
        uv = EXCLUDED.uv,
@@ -45,6 +47,7 @@ export async function upsertShoplazzaUtm(input: ShoplazzaUtmUpsertInput): Promis
        begin_checkout = EXCLUDED.begin_checkout,
        orders = EXCLUDED.orders,
        sales = EXCLUDED.sales,
+       escape_rate = EXCLUDED.escape_rate,
        synced_at = NOW()`,
     [
       input.shopId,
@@ -56,6 +59,7 @@ export async function upsertShoplazzaUtm(input: ShoplazzaUtmUpsertInput): Promis
       input.beginCheckout,
       input.orders,
       input.sales,
+      input.escapeRate,
       input.dateStart,
       input.dateEnd,
     ]
@@ -113,6 +117,9 @@ export async function getShoplazzaUtmForAccount(
          SUM(u.begin_checkout)::int AS begin_checkout,
          SUM(u.orders)::int AS orders,
          SUM(u.sales)::numeric AS sales,
+         CASE WHEN SUM(u.uv) > 0
+           THEN SUM(u.escape_rate * u.uv) / SUM(u.uv)
+           ELSE 0 END AS escape_rate,
          MIN(u.date_start) AS date_start,
          MAX(u.date_end) AS date_end,
          MAX(u.synced_at) AS synced_at
@@ -138,6 +145,9 @@ export async function getShoplazzaUtmForAccount(
        SUM(u.begin_checkout)::int AS begin_checkout,
        SUM(u.orders)::int AS orders,
        SUM(u.sales)::numeric AS sales,
+       CASE WHEN SUM(u.uv) > 0
+         THEN SUM(u.escape_rate * u.uv) / SUM(u.uv)
+         ELSE 0 END AS escape_rate,
        MIN(u.date_start) AS date_start,
        MAX(u.date_end) AS date_end,
        MAX(u.synced_at) AS synced_at
@@ -183,6 +193,9 @@ export async function getShoplazzaUtmCampaignRows(
          SUM(u.uv)::int AS uv, SUM(u.pv)::int AS pv,
          SUM(u.add_to_cart)::int AS add_to_cart, SUM(u.begin_checkout)::int AS begin_checkout,
          SUM(u.orders)::int AS orders, SUM(u.sales)::numeric AS sales,
+         CASE WHEN SUM(u.uv) > 0
+           THEN SUM(u.escape_rate * u.uv) / SUM(u.uv)
+           ELSE 0 END AS escape_rate,
          MIN(u.date_start) AS date_start, MAX(u.date_end) AS date_end, MAX(u.synced_at) AS synced_at
        FROM shoplazza_utm u
        WHERE u.shop_id = $1 AND u.date_start >= $2 AND u.date_end <= $3 AND u.date_start = u.date_end
@@ -199,6 +212,9 @@ export async function getShoplazzaUtmCampaignRows(
        SUM(u.uv)::int AS uv, SUM(u.pv)::int AS pv,
        SUM(u.add_to_cart)::int AS add_to_cart, SUM(u.begin_checkout)::int AS begin_checkout,
        SUM(u.orders)::int AS orders, SUM(u.sales)::numeric AS sales,
+       CASE WHEN SUM(u.uv) > 0
+         THEN SUM(u.escape_rate * u.uv) / SUM(u.uv)
+         ELSE 0 END AS escape_rate,
        MIN(u.date_start) AS date_start, MAX(u.date_end) AS date_end, MAX(u.synced_at) AS synced_at
      FROM shoplazza_utm u
      WHERE u.date_start >= $1 AND u.date_end <= $2 AND u.date_start = u.date_end

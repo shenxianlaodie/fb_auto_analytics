@@ -256,3 +256,23 @@ export async function getFbAdsMeta(adAccountId: string): Promise<FbAdMetaRecord[
     creative: r.creative ? (typeof r.creative === 'string' ? JSON.parse(r.creative) : r.creative) : null,
   }));
 }
+
+export type FbEntityLevel = 'campaign' | 'adset' | 'ad';
+
+/** 根据 FB 对象 ID 反查所属广告账户（用于写操作选 Token） */
+export async function lookupAccountIdForEntity(
+  entityId: string,
+  level: FbEntityLevel
+): Promise<string | null> {
+  const table =
+    level === 'campaign' ? 'fb_campaigns' :
+    level === 'adset' ? 'fb_adsets' : 'fb_ads_meta';
+  const idCol =
+    level === 'campaign' ? 'campaign_id' :
+    level === 'adset' ? 'adset_id' : 'ad_id';
+  const row = await query(
+    `SELECT ad_account_id FROM ${table} WHERE ${idCol} = $1 LIMIT 1`,
+    [entityId]
+  );
+  return row[0]?.ad_account_id ? String(row[0].ad_account_id).replace(/^act_/, '') : null;
+}

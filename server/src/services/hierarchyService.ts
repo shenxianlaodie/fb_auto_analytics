@@ -196,6 +196,7 @@ export class HierarchyService {
         utmBeginCheckout: utmRow?.begin_checkout ?? 0,
         utmOrders: utmRow?.orders ?? 0,
         utmSales: Number(utmRow?.sales) || 0,
+        utmBounceRate: Number(utmRow?.escape_rate) || 0,
         utmMatched: !!utmRow,
         utmCampaign: utmCampaignRow?.utm_value ?? null,
         ...(adDailyMap

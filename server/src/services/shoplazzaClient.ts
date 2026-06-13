@@ -14,6 +14,7 @@ export interface ShoplazzaUtmRow {
   beginCheckout: number;
   orders: number;
   sales: number;
+  escapeRate: number;
 }
 
 export interface ShoplazzaSpuTopRow {
@@ -441,12 +442,17 @@ export class ShoplazzaClient {
       map.set(row.utmValue, { ...row });
       return;
     }
+    const prevUv = existing.uv;
     existing.uv += row.uv;
     existing.pv += row.pv;
     existing.addToCart += row.addToCart;
     existing.beginCheckout += row.beginCheckout;
     existing.orders += row.orders;
     existing.sales = Math.round((existing.sales + row.sales) * 100) / 100;
+    if (existing.uv > 0) {
+      const weighted = (existing.escapeRate || 0) * prevUv + row.escapeRate * row.uv;
+      existing.escapeRate = Math.round((weighted / existing.uv) * 10000) / 10000;
+    }
   }
 
   private parseUtmContentRow(row: any): ShoplazzaUtmRow | null {
@@ -466,6 +472,11 @@ export class ShoplazzaClient {
   }
 
   private parseUtmMetricsRow(utmValue: string, row: any): ShoplazzaUtmRow {
+    const rawEscape = row.escape_rate ?? row.escape_rate_original;
+    let escapeRate = this.toFloat(rawEscape);
+    if (escapeRate > 0 && escapeRate <= 1) {
+      escapeRate = Math.round(escapeRate * 10000) / 100;
+    }
     return {
       utmValue,
       uv: this.toInt(row.view_client_count ?? row.uv),
@@ -474,6 +485,7 @@ export class ShoplazzaClient {
       beginCheckout: this.toInt(row.begin_checkout_count ?? row.begin_checkout_uv),
       orders: this.toInt(row.orders_count ?? row.orders),
       sales: this.toFloat(row.product_sales ?? row.sales),
+      escapeRate,
     };
   }
 

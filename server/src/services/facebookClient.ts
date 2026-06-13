@@ -6,6 +6,13 @@ import { getFbQueue } from './fbRequestQueue';
 import { sleep } from '../utils/sleep';
 import { recordUsageHeaders } from './fbUsageMonitor';
 
+/** Ad 节点 nested creative 字段（含缩略图） */
+export const FB_AD_CREATIVE_SUBFIELDS =
+  'id,thumbnail_url,image_url,effective_object_story_id,object_story_id';
+export const FB_AD_LIST_FIELDS =
+  `id,name,adset_id,campaign_id,status,creative{${FB_AD_CREATIVE_SUBFIELDS}},created_time`;
+export const FB_AD_DETAIL_FIELDS = `${FB_AD_LIST_FIELDS},tracking_specs`;
+
 interface TokenExchangeResult {
   access_token: string;
   token_type: string;
@@ -289,7 +296,7 @@ export class FacebookClient {
   async getAds(accountId: string, accessToken: string, filters: { adsetId?: string; campaignId?: string }, limit: number = 25, after?: string, extraParams?: Record<string, any>): Promise<any> {
     const params: Record<string, any> = {
       ...extraParams,
-      fields: 'id,name,adset_id,campaign_id,status,creative{id,effective_object_story_id,object_story_id},created_time',
+      fields: FB_AD_LIST_FIELDS,
       limit,
     };
     if (after) params.after = after;
@@ -303,7 +310,7 @@ export class FacebookClient {
 
   async getAd(adId: string, accessToken: string): Promise<any> {
     return this.get(adId, accessToken, {
-      fields: 'id,name,adset_id,campaign_id,status,creative{id,effective_object_story_id,object_story_id},created_time,tracking_specs',
+      fields: FB_AD_DETAIL_FIELDS,
     });
   }
 

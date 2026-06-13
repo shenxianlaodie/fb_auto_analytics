@@ -11,6 +11,7 @@ export interface DailyBreakdownRow {
   utmBeginCheckout: number;
   utmOrders: number;
   utmSales: number;
+  utmBounceRate: number;
 }
 
 interface AdDayMetrics {
@@ -22,6 +23,7 @@ interface AdDayMetrics {
   utmBeginCheckout: number;
   utmOrders: number;
   utmSales: number;
+  bounceRateWeighted: number;
 }
 
 function emptyDayMetrics(): AdDayMetrics {
@@ -34,6 +36,7 @@ function emptyDayMetrics(): AdDayMetrics {
     utmBeginCheckout: 0,
     utmOrders: 0,
     utmSales: 0,
+    bounceRateWeighted: 0,
   };
 }
 
@@ -55,6 +58,9 @@ function toDailyRow(date: string, m: AdDayMetrics): DailyBreakdownRow {
     utmBeginCheckout: m.utmBeginCheckout,
     utmOrders: m.utmOrders,
     utmSales: Math.round(m.utmSales * 100) / 100,
+    utmBounceRate: m.utmUv > 0
+      ? Math.round((m.bounceRateWeighted / m.utmUv) * 10000) / 10000
+      : 0,
   };
 }
 
@@ -67,6 +73,7 @@ function mergeDayMetrics(target: AdDayMetrics, source: AdDayMetrics) {
   target.utmBeginCheckout += source.utmBeginCheckout;
   target.utmOrders += source.utmOrders;
   target.utmSales += source.utmSales;
+  target.bounceRateWeighted += source.bounceRateWeighted;
 }
 
 /** 构建广告 × 日期 指标映射 */
@@ -94,11 +101,13 @@ export function buildAdDailyMetricsMap(
     const adId = String(row.utm_value).trim();
     const date = row.date_start;
     const m = ensure(adId, date);
-    m.utmUv += Number(row.uv) || 0;
+    const uv = Number(row.uv) || 0;
+    m.utmUv += uv;
     m.utmAddToCart += Number(row.add_to_cart) || 0;
     m.utmBeginCheckout += Number(row.begin_checkout) || 0;
     m.utmOrders += Number(row.orders) || 0;
     m.utmSales += Number(row.sales) || 0;
+    m.bounceRateWeighted += (Number(row.escape_rate) || 0) * uv;
   }
 
   return byAd;
@@ -191,6 +200,7 @@ export function mergeEntityDailyBreakdown(
       utmBeginCheckout: utm?.utmBeginCheckout ?? 0,
       utmOrders: utm?.utmOrders ?? 0,
       utmSales: utm?.utmSales ?? 0,
+      utmBounceRate: utm?.utmBounceRate ?? 0,
     };
   });
 }
